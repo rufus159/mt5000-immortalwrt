@@ -20,7 +20,7 @@
 （GL.iNet `GLiNet-Tech`，作者 John Crispin），GPL-2.0。
 
 802.1Q tagger / MTK PPE 卸载的独立参考实现：
-**[Beaverfffan/x-wrt-push](https://github.com/Beaverfffan/x-wrt-push)**。
+**[Beaverfffan/x-wrt-push](https://github.com/Beaverfffan/x-wrt-mt5000)**。
 
 ---
 
@@ -173,22 +173,8 @@ luci-i18n-argon-config-zh-cn-...       同上
 
 本仓库默认构建**移除以上全部**，固件内容 = 官方源默认包集。
 
-### 刷完自己核对
 
-登录 `192.168.5.1`（账号 `root`，密码见构建时 `root_password` 输入项），执行：
 
-```bash
-# 与官方同类型设备对比包数量
-apk list --installed | wc -l
-
-# 确认第三方包已绝迹（应无输出）
-apk list --installed | grep -E "istore|luci-app-run|taskd|luci-lib-xterm|argon"
-```
-
-`patches/` 里没有任何新增软件包，纯内核驱动改动；`config/mt5000.seed`
-只做减法。
-
----
 
 ## 本仓库相对原作者的全部改动
 
@@ -288,15 +274,7 @@ git rebase master        # 或 git merge master
 
 ## 已知问题
 
-| 问题 | 影响 | 状态 |
-|---|---|---|
-| `rx_pp_recycle_ring_full` 计数高（约 0.009% 丢包）| 满速长传有极轻微损失 | MTK 平台特性，PPE 卸载也无法绕过 |
-| `u-boot-env` 分区 CRC 报错 | 无（该分区为空）| 可忽略 |
-| 以太网中断集中在 CPU0 | 高负载时单核受限 | 未解决，MTK 中断分发限制 |
-| 无巨帧支持（MTU 上限 1500）| NAS/iSCSI 场景受限 | 未启用 |
-| `get_stats64` 修复仅覆盖 `master` | 25.12 仍显示聚合值 | 待补 25.12 版 |
-
----
+仍在测试中
 
 ## 许可
 
