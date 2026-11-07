@@ -30,20 +30,32 @@
 
 | ImmortalWrt 基线 commit | 日期 | 内核 | 补丁目录 |
 |---|---|---|---|
-| `f44d1535b4ef107a4ee255caa43cf101daf9fa35`（`master`） | 2026-09-18 | **6.18** | `patches/` |
+| `4765b657625ec5bbda74b44400465fe043802b30`（`master`） | 2026-11-05 | **6.18** | `patches/` |
 
-该基线是 ImmortalWrt 的 `Merge Official Source` 提交点（同步上游 OpenWrt）。
+同一时间点的 `Merge Official Source` 同步提交 `de7e6ba56e45`（11-05 03:19）
+也验证过 7 个补丁全部干净套用，二者任选其一都可以；本仓库以 `4765b65762` 为准，
+因为补丁是对着它生成的（hunk 的 index 行也严格对齐）。
 可用 `iwrt_ref` 输入覆盖为任意 ImmortalWrt commit。
 
-### 基线是冻结的，上游是滚动的
+### 基线的冻结，与漂移面到底有多大
 
-`master` 基线 `f44d1535b4`（2026-09-18）是当时的 `master` HEAD，冻结后上游又走了
-**1831 个提交**。冻结是刻意的——补丁链依赖 `795-10` 等文件的确切内容，基线一动
-就得重做 rebase；但它也意味着**拿不到这期间的上游修复**。
+基线冻结是刻意的——补丁依赖 `795-10` 等自建文件与上游板卡列表的确切上下文，
+基线一动就得重做 rebase。但漂移面比看上去小得多：整套补丁 4400 行里，
+**只有 6 个上游文件、约 10 个 hunk 会随基线变动**
+（`board.d/02_network`、`upgrade/platform.sh`、`filogic/config-6.18`、
+`image/filogic.mk`、`generic/config-6.18`，以及 `mtk_ppe_offload.c` 里
+`mtk_flow_get_dsa_port()` 那一小段）；`795-10/11/12` 与 DTS 都是我们自己建的文件，
+上游怎么改都不影响。
 
-升级基线时：把新 SHA 填进 `iwrt_ref` 试跑，若补丁 apply 失败，说明上游动过我们
-改的那几行（已知高风险点：`mtk_ppe_offload.c` 的 DSA 端口→TX queue 映射，
-上游 `795-05~07` 正在改同一批代码位置），需要重新生成对应的 hunk。
+上一版基线 `f44d1535b4`（2026-09-18）到 `4765b65762` 之间隔了 **1831 个提交**，
+实测只失败两处，都是 1~3 行的上下文错位：
+
+- `platform.sh` 的板卡列表——上游插入了 `gl-be14000`、`rt-ax59u-ubi`、
+  `bpi-r4-pro-4e` 等，把我们的插入点推后 37 行
+- `filogic/config-6.18` 的 DSA TAG 段——上游新增 `TAG_YT921X` / `TAG_YT922X`
+
+升级基线时：把新 SHA 填进 `iwrt_ref` 试跑；若 apply 失败，先查上面这两个位置。
+`git apply` 没有 fuzz，用 `patch -p1 -F2` 能直接看出是「纯偏移」还是「真冲突」。
 
 workflow 在 `Clone ImmortalWrt source` 步骤会：
 
@@ -272,7 +284,7 @@ echo 'file * -p' > $CTL
 | `bash` / `curl` / `ip-full` / `autocore` | 基础增强 + CPU 状态页 |
 | `CONFIG_KERNEL_DYNAMIC_DEBUG` + `CONFIG_KERNEL_DEBUG_FS` | 内核调试：`pr_debug` 运行时按文件/函数开关，排障用，见上文「内核调试」一节 |
 
-### 2. DSA 端口统计修复（`patches/0006`）
+### 2. DSA 端口统计修复（`patches/0005`）
 
 **症状**：`/sys/class/net/lanN/statistics/*` 显示的不是该端口自己的计数。
 
@@ -293,12 +305,13 @@ ASIC  层：lan1 +4140 MB / lan2 +2584 MB         ← 对（ethtool -S 直读 MI
 读取硬件 MIB 寄存器，映射到 `struct rtnl_link_stats64`。
 
 **注意**：驱动源码**内嵌在 `795-10-net-dsa-realtek-add-rtl8366ub.patch` 里**，
-不是 buildroot 树里的独立 `.c` 文件。所以 `0006` 编辑的是那个 pending patch，
+不是 buildroot 树里的独立 `.c` 文件。所以 `0005` 编辑的是那个 pending patch，
 并且必须同步两处嵌套行数声明：
 
 ```
-内层  @@ -0,0 +1,993  @@                     → @@ -0,0 +1,1043 @@
-外层  @@ -0,0 +1,3617 @@（在 0001 中）         → @@ -0,0 +1,3667 @@
+0001 里 795-10 的整文件声明   @@ -0,0 +1,3629  @@
+0002-0007 叠加之后            @@ -0,0 +1,3729  @@   （+100 行）
+内层同理：改了 795-10 里哪个 .c，就要同步它自己的 @@ -0,0 +1,N @@
 ```
 
 两处数字均由真实 `git apply` 0001 后的结果推导，非人工计数。
@@ -314,7 +327,7 @@ ASIC  层：lan1 +4140 MB / lan2 +2584 MB         ← 对（ethtool -S 直读 MI
 | 分支 | 内容 | 用途 |
 |---|---|---|
 | **`master`** | **纯原作者代码**，与 `Kitsune2077/mt5000-immortalwrt` 保持一致 | 跟踪上游 |
-| **`dev`** | 原作者代码 + 上述全部改动（配置精简、`patches/0006`、README、LICENSE）| 实际构建用 |
+| **`dev`** | 原作者代码 + 上述全部改动（配置精简、`patches/`、README、LICENSE）| 实际构建用 |
 
 ### 同步原作者更新到 master
 
@@ -343,7 +356,7 @@ git rebase master        # 或 git merge master
 
 | 输入 | 默认 | 说明 |
 |---|---|---|
-| `iwrt_ref` | 空 | 留空用 master 默认基线 `f44d1535b4`（内核 6.18，有 PPE 加速）|
+| `iwrt_ref` | 空 | 留空用默认基线 `4765b65762`（2026-11-05，内核 6.18，有 PPE 加速）|
 | `lan_ip` | `10.0.0.1` | 默认 LAN 地址 |
 | `root_password` | `root` | 建议改掉 |
 | `extra_services` | `none` | 附加服务：`none` / `mwan3` / `docker` / `docker+mwan3` |

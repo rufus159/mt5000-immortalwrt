@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       iwrt_ref:
-        description: 'ImmortalWrt 基线 commit (留空则用 master 默认基线 f44d1535b4; 显式填写时优先, 但需自行确保补丁能套用)'
+        description: 'ImmortalWrt 基线 commit (留空则用默认基线 4765b65762; 显式填写时优先, 但需自行确保补丁能套用)'
         required: false
         default: ''
         type: string
@@ -150,7 +150,7 @@ jobs:
       # key 匹配变成 "dl--*"/"stage--*"，一个都匹配不上——实测会把当前
       # 基线刚存下的缓存也误删（r11 日志: keeping: dl--* and stage--*）。
       # GitHub 表达式在 job 启动时就求值，所有 step 从一开始就能读到。
-      IWRT_REF: ${{ github.event.inputs.iwrt_ref || 'f44d1535b4' }}
+      IWRT_REF: ${{ github.event.inputs.iwrt_ref || '4765b65762' }}
       # 并行度：ubuntu-24.04 标准 runner 是 4 vCPU / 16G。
       # nproc+1 = 5 对 16G 是安全的；但显式写在 env 里可复现、可调，
       # 比散落在各 step 里的 $(nproc)+1 更可维护。
@@ -270,7 +270,7 @@ jobs:
           # 基线默认值解析已上移到 job 级 env（IWRT_REF 表达式），这里
           # 不再重复 if/elif 赋值，只保留结果核对。CI 和本地脚本
           # (build-local.sh resolve_inputs) 的默认基线必须保持一致。
-          echo "::notice::基线: $IWRT_REF (master 默认 f44d1535b4/内核6.18)"
+          echo "::notice::基线: $IWRT_REF (默认 4765b65762, 2026-11-05 / 内核6.18)"
           echo "$LAN_IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || { echo "::error::非法 LAN IP: $LAN_IP"; exit 1; }
           if [ "$PPPOE" = "true" ] && [ -z "$PPPOE_USERNAME" ]; then
             echo "::error::启用了 PPPoE 但未填写账号 (pppoe_username)"; exit 1
@@ -386,16 +386,20 @@ jobs:
       - name: Apply MT5000 device patch
         run: |
           cd immortalwrt
-          # master : patches/ = openwrt PR #24237 head (0001 设备支持本体)
-          #         + 该 PR 的审阅反馈修复 (0002, 自 dmsza/openwrt 移植)
-          #         + 795-12 内核补丁上下文修复 (0003, dmsza b669f86d)
-          #         + 交换机初始化强化 + BPDU/IGMP/MLD 陷阱到 CPU (0004,
-          #           PR head 89a10ec, 2026-10-26 真机复测通过; 795-11 PPE
-          #           卸载重构暂缓, 等 PEPITO82 复位 bug 复测有结论)
-          #         + tagger 同步(控制帧解码 + mac_header 修复, 旧 tagger
-          #           解不了 0004 的陷阱帧) + factory nvmem 单元 (0005,
-          #           PR head 1713e8be63, 2026-11-05 四提交重构)
-          # 补丁只对已验证的 master 基线保证干净套用。
+          # patches/ 按「建文件 -> 改文件」严格分层，必须按编号顺序套：
+          #   0001 设备支持本体（openwrt PR #24237 head + 该 PR 的审阅反馈修复，
+          #        自 dmsza/openwrt 移植）+ RTL8366UB 驱动(795-10) + 802.1Q
+          #        tagger 与 PPE 出口(795-11) + dummy NAPI 顺序修复(795-12)
+          #   0002 795-11/795-12 的 VLAN offload 与 NAPI 清理修复 (dmsza 8fbeeb6)
+          #   0003 交换机初始化强化 + BPDU/IGMP/MLD 陷阱到 CPU (PR head 89a10ec)
+          #   0004 tagger 同步(控制帧解码 + mac_header 修复) + factory nvmem 单元
+          #        (PR head 1713e8be63)
+          #   0005 rtl8366ub get_stats64（端口统计不再退化成 CPU 口聚合值）
+          #   0006 热保护与 u-boot-env 噪声修复（只改 filogic config）
+          #   0007 port_max_mtu（巨帧）
+          # 0002-0007 只改 0001 建出来的文件，不受上游漂移影响；
+          # 会随基线变动的是 0001 里那 10 个上游 hunk。
+          # 补丁只对已验证的基线保证干净套用。
           for p in ../patches/*.patch; do
             echo "applying $p"
             git apply --check "$p" && git apply "$p" || { echo "::error::$p 应用失败; 基线 $IWRT_REF 可能已变动, 请显式指定已知可用 iwrt_ref 或基于 master 重新生成补丁"; exit 1; }

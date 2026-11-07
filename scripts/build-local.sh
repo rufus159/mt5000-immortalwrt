@@ -33,7 +33,7 @@ REPO_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 
 # master 默认基线。改动这里时同步改 .github/workflows/build-mt5000.yml
 # 的 IWRT_REF 表达式，否则本地和 CI 会编出不同固件。
-REF_MASTER_DEFAULT=f44d1535b4
+REF_MASTER_DEFAULT=4765b65762
 
 IMMORTALWRT_GIT=https://github.com/immortalwrt/immortalwrt
 
@@ -111,7 +111,7 @@ usage() {
 build-local.sh — 本地编译 GL.iNet MT5000 (Brume 3) 的 ImmortalWrt 固件
 
 基本：
-  --ref <commit|branch>       覆盖默认基线（默认 master→f44d1535b4）
+  --ref <commit|branch>       覆盖默认基线（默认 master→4765b65762）
   --src <dir>                 源码目录（默认 <repo>/immortalwrt）
   --jobs <N>                  编译并行度（默认按可用内存自动算）
   --clean                     删除并重新克隆源码树（会丢增量编译成果）
@@ -473,9 +473,9 @@ do_patch() {
 
     # 幂等性不能靠「逐个补丁反向 apply --check」判断。反例就在本仓库里：
     #   0001 创建 target/linux/generic/pending-6.18/795-10-...patch
-    #   0006 又修改了这个文件（给内层 dsa.c 加 get_stats64）
-    #   0008 再改一次（加 port_max_mtu）
-    # 全链应用后，0001 反向检查会因 795-10 已被 0006/0008 改过而失败，
+    #   0005 又修改了这个文件（给内层 dsa.c 加 get_stats64）
+    #   0007 再改一次（加 port_max_mtu）
+    # 全链应用后，0001 反向检查会因 795-10 已被 0005/0007 改过而失败，
     # 于是被误判成「没打过」，再正向 apply 又撞 already exists —— 死锁。
     #
     # 改用标记文件：记下「哪个基线 + 哪批补丁」已经应用过。标记匹配就整段
@@ -526,7 +526,7 @@ do_patch() {
                 echo
                 echo "常见原因："
                 echo "  1. 基线漂移 —— 上游动过补丁涉及的代码行，需要重新生成该 hunk"
-                echo "  2. 补丁顺序错 —— 后面的补丁依赖前面的（如 0008 依赖 0006）"
+                echo "  2. 补丁顺序错 —— 后面的补丁依赖前面的（如 0007 依赖 0005）"
                 echo "  3. 源码树有非补丁的残留改动 —— 用 --clean 重来"
                 echo
                 echo "定位真实冲突："

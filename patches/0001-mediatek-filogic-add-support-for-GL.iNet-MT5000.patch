@@ -1,9 +1,55 @@
+From: GL.iNet Test Build <support@gl-inet.com>
+Date: Fri, 4 Sep 2026 00:00:00 +0800
+Subject: [PATCH] mediatek: filogic: add support for GL.iNet GL-MT5000
+
+Board support for the GL.iNet GL-MT5000 (Brume 3): MT7987A SoC with two
+2.5G LAN ports behind a Realtek RTL8366UB switch and one 2.5G WAN port on
+the SoC's internal PHY.
+
+This used to be two patch layers (device support, then review fixes).
+They are folded into one because both rewrote the same upstream files
+(board.d/02_network, upgrade/platform.sh, filogic/config-6.18,
+image/filogic.mk), so every baseline bump had to be rebased twice. The
+DTS is now created under its final name instead of being created and then
+renamed in the second layer.
+
+Contents:
+- RTL8366UB DSA driver (795-10) and its 802.1Q tagger plus PPE egress
+  plumbing (795-11)
+- mtk_eth_soc fix so a userspace link-up cannot race the dummy NAPI
+  device allocation (795-12)
+- DTS, image recipe, board.d and kernel config entries
+
+Signed-off-by: GL.iNet Test Build <support@gl-inet.com>
+Signed-off-by: rufus159 <rufus159@users.noreply.github.com>
+---
+
+diff --git a/target/linux/generic/config-6.18 b/target/linux/generic/config-6.18
+index 6a58024..14c5c33 100644
+--- a/target/linux/generic/config-6.18
++++ b/target/linux/generic/config-6.18
+@@ -4486,6 +4486,7 @@ CONFIG_NET_CORE=y
+ # CONFIG_NET_DSA_QCA8K_LEDS_SUPPORT is not set
+ # CONFIG_NET_DSA_REALTEK is not set
+ # CONFIG_NET_DSA_REALTEK_SMI is not set
++# CONFIG_NET_DSA_REALTEK_RTL8366UB is not set
+ # CONFIG_NET_DSA_SJA1105 is not set
+ # CONFIG_NET_DSA_SMSC_LAN9303_I2C is not set
+ # CONFIG_NET_DSA_SMSC_LAN9303_MDIO is not set
+@@ -4509,6 +4510,7 @@ CONFIG_NET_CORE=y
+ # CONFIG_NET_DSA_TAG_QCA is not set
+ # CONFIG_NET_DSA_TAG_RTL4_A is not set
+ # CONFIG_NET_DSA_TAG_RTL8_4 is not set
++# CONFIG_NET_DSA_TAG_RTL8366UB_8021Q is not set
+ # CONFIG_NET_DSA_TAG_RZN1_A5PSW is not set
+ # CONFIG_NET_DSA_TAG_SJA1105 is not set
+ # CONFIG_NET_DSA_TAG_TRAILER is not set
 diff --git a/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch b/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch
 new file mode 100644
-index 00000000000000..422d9cb4356c16
+index 0000000..7e8ab5a
 --- /dev/null
 +++ b/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch
-@@ -0,0 +1,3617 @@
+@@ -0,0 +1,3629 @@
 +From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: GL.iNet Test Build <support@gl-inet.com>
 +Date: Fri, 4 Sep 2026 00:00:00 +0800
@@ -435,7 +481,7 @@ index 00000000000000..422d9cb4356c16
 +index 0000000..c4752f2
 +--- /dev/null
 ++++ b/drivers/net/dsa/realtek/rtl8366ub_dsa.c
-+@@ -0,0 +1,993 @@
++@@ -0,0 +1,1002 @@
 ++// SPDX-License-Identifier: GPL-2.0
 ++/*
 ++ * This is a sparsely documented chip, the only viable documentation seems
@@ -734,6 +780,15 @@ index 00000000000000..422d9cb4356c16
 ++    if (ret)
 ++        return dev_err_probe(priv->dev, ret,
 ++                             "failed to clear CPU VLAN egress overrides\n");
+++
+++    /* Every frame the tagger emits is VLAN-tagged; never classify a
+++     * stray untagged conduit frame by the CPU PVID (cf. sja1105
+++     * drop_untagged on CPU/DSA ports).
+++     */
+++    ret = rtl8366ub_vlan_set_accept_tagged_only(priv, priv->cpu_port, true);
+++    if (ret)
+++        return dev_err_probe(priv->dev, ret,
+++                             "failed to set CPU port tagged-only\n");
 ++
 ++    ret = rtl8366ub_vlan_get_egress_mode(priv, priv->cpu_port,
 ++                                         &egress_mode);
@@ -2819,7 +2874,7 @@ index 00000000000000..422d9cb4356c16
 +index 0000000..bf40d83
 +--- /dev/null
 ++++ b/drivers/net/dsa/realtek/rtl8366ub_switch.c
-+@@ -0,0 +1,430 @@
++@@ -0,0 +1,433 @@
 ++// SPDX-License-Identifier: GPL-2.0
 ++
 ++#include <linux/bitfield.h>
@@ -3213,8 +3268,11 @@ index 00000000000000..422d9cb4356c16
 ++int rtl8366ub_switch_init(struct rtl8366ub_priv *priv)
 ++{
 ++    struct rtl8366ub_vlan vlan = {
-++        .member = RTL8366UB_VALID_PHYSICAL_MASK,
-++        .untag = RTL8366UB_VALID_PHYSICAL_MASK,
+++        /* No data VLAN may be reachable through a default PVID; the
+++         * bridge's default_pvid 1 populates this per port.
+++         */
+++        .member = 0,
+++        .untag = 0,
 ++        .ivl = false,
 ++    };
 ++    int port;
@@ -3622,11 +3680,11 @@ index 00000000000000..422d9cb4356c16
 ++
 ++#endif
 diff --git a/target/linux/generic/pending-6.18/795-11-net-dsa-rtl8366ub-8021q-ppe-offload.patch b/target/linux/generic/pending-6.18/795-11-net-dsa-rtl8366ub-8021q-ppe-offload.patch
-new file mode 100755
-index 00000000000000..233892cd71a335
+new file mode 100644
+index 0000000..926bbab
 --- /dev/null
 +++ b/target/linux/generic/pending-6.18/795-11-net-dsa-rtl8366ub-8021q-ppe-offload.patch
-@@ -0,0 +1,310 @@
+@@ -0,0 +1,313 @@
 +From: GL.iNet Test Build <support@gl-inet.com>
 +Date: Fri, 28 Aug 2026 19:30:00 +0800
 +Subject: [PATCH] net: dsa: add RTL8366UB 802.1Q tagger for MTK PPE
@@ -3648,11 +3706,14 @@ index 00000000000000..233892cd71a335
 +index e667b46..5a470b0 100644
 +--- a/include/net/dsa.h
 ++++ b/include/net/dsa.h
-+@@ -57,6 +57,7 @@ struct tc_action;
++@@ -57,6 +57,10 @@ struct tc_action;
 + #define DSA_TAG_PROTO_BRCM_LEGACY_FCS_VALUE	29
 + #define DSA_TAG_PROTO_MXL862_VALUE		30
 + #define DSA_TAG_PROTO_MXL862_8021Q_VALUE	31
-++#define DSA_TAG_PROTO_RTL8366UB_8021Q_VALUE	32
+++/* Out-of-tree tagger: stay clear of the upstream sequence (v7.0 uses
+++ * 30-32, master is at 35). Proper fix: get an id assigned on netdev.
+++ */
+++#define DSA_TAG_PROTO_RTL8366UB_8021Q_VALUE	200
 + 
 + enum dsa_tag_protocol {
 + 	DSA_TAG_PROTO_NONE		= DSA_TAG_PROTO_NONE_VALUE,
@@ -3708,7 +3769,7 @@ index 00000000000000..233892cd71a335
 + 			data |= TX_DMA_SPTAG_V3;
 + 	}
 + 	WRITE_ONCE(desc->txd5, data);
-+@@ -3767,12 +3768,13 @@ static void mtk_gdm_config(struct mtk_eth *eth, u32 id, u32 config)
++@@ -3767,13 +3768,14 @@ static void mtk_gdm_config(struct mtk_eth *eth, u32 id, u32 config)
 + 
 + 	/* default setup the forward port to send frame to PDMA */
 +-	val &= ~0xffff;
@@ -3939,10 +4000,10 @@ index 00000000000000..233892cd71a335
 +2.51.0
 diff --git a/target/linux/generic/pending-6.18/795-12-net-mediatek-init-dummy-napi-before-netdev-registration.patch b/target/linux/generic/pending-6.18/795-12-net-mediatek-init-dummy-napi-before-netdev-registration.patch
 new file mode 100644
-index 00000000000000..39f1ebb5a9da43
+index 0000000..2547e36
 --- /dev/null
 +++ b/target/linux/generic/pending-6.18/795-12-net-mediatek-init-dummy-napi-before-netdev-registration.patch
-@@ -0,0 +1,85 @@
+@@ -0,0 +1,96 @@
 +From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 +From: GL.iNet Test Build <support@gl-inet.com>
 +Date: Fri, 4 Sep 2026 12:00:00 +0800
@@ -3984,12 +4045,12 @@ index 00000000000000..39f1ebb5a9da43
 + 	for (i = 0; i < MTK_MAX_DEVS; i++) {
 + 		if (!eth->netdev[i])
 + 			continue;
-+@@ -5836,35 +5851,24 @@ static int mtk_probe(struct platform_device *pdev)
++@@ -5836,35 +5851,35 @@ static int mtk_probe(struct platform_device *pdev)
 + 		err = register_netdev(eth->netdev[i]);
 + 		if (err) {
 + 			dev_err(eth->dev, "error bringing up device\n");
 +-			goto err_deinit_ppe;
-++			goto err_free_dummy;
+++			goto err_unreg_netdev;
 + 		} else
 + 			netif_info(eth, probe, eth->netdev[i],
 + 				   "mediatek frame engine at 0x%08lx, irq %d\n",
@@ -4018,7 +4079,18 @@ index 00000000000000..39f1ebb5a9da43
 + 
 +-err_unreg_netdev:
 +-	mtk_unreg_dev(eth);
-++err_free_dummy:
+++err_unreg_netdev:
+++	while (--i >= 0)
+++		if (eth->netdev[i])
+++			unregister_netdev(eth->netdev[i]);
+++	for (i = 0; i < MTK_MAX_DEVS; i++) {
+++		struct mtk_mac *mac;
+++
+++		if (!eth->netdev[i] || !MTK_HAS_CAPS(eth->soc->caps, MTK_QDMA))
+++			continue;
+++		mac = netdev_priv(eth->netdev[i]);
+++		unregister_netdevice_notifier(&mac->device_notifier);
+++	}
 ++	netif_napi_del(&eth->tx_napi);
 ++	netif_napi_del(&eth->rx_napi);
 ++	free_netdev(eth->dummy_dev);
@@ -4028,12 +4100,12 @@ index 00000000000000..39f1ebb5a9da43
 + 	mtk_mdio_cleanup(eth);
 +-- 
 +2.51.0
-diff --git a/target/linux/mediatek/dts/mt7987a-gl-mt5000.dts b/target/linux/mediatek/dts/mt7987a-gl-mt5000.dts
+diff --git a/target/linux/mediatek/dts/mt7987a-glinet-gl-mt5000.dts b/target/linux/mediatek/dts/mt7987a-glinet-gl-mt5000.dts
 new file mode 100644
-index 00000000000000..a6b1d3c2874714
+index 0000000..fc1df4b
 --- /dev/null
-+++ b/target/linux/mediatek/dts/mt7987a-gl-mt5000.dts
-@@ -0,0 +1,251 @@
++++ b/target/linux/mediatek/dts/mt7987a-glinet-gl-mt5000.dts
+@@ -0,0 +1,253 @@
 +/* SPDX-License-Identifier: (GPL-2.0 OR MIT) */
 +
 +/dts-v1/;
@@ -4054,6 +4126,7 @@ index 00000000000000..a6b1d3c2874714
 +		led-failsafe = &led_power;
 +		led-running = &led_power;
 +		led-upgrade = &led_power;
++		serial0 = &uart0;
 +	};
 +
 +	chosen {
@@ -4061,6 +4134,7 @@ index 00000000000000..a6b1d3c2874714
 +				earlycon=uart8250,mmio32,0x11000000 \
 +				root=PARTLABEL=rootfs rootwait \
 +			    rootfstype=squashfs,f2fs pci=pcie_bus_perf";
++		stdout-path = "serial0:115200n8";
 +	};
 +
 +	gpio-keys {
@@ -4087,20 +4161,20 @@ index 00000000000000..a6b1d3c2874714
 +	leds {
 +		compatible = "gpio-leds";
 +
-+		led_power: led@0 {
++		led_power: led-0 {
 +			color = <LED_COLOR_ID_BLUE>;
 +			function = "run";
 +			gpios = <&pio 44 GPIO_ACTIVE_LOW>;
 +			default-state = "on";
 +		};
 +
-+		led@1 {
++		led-1 {
 +			color = <LED_COLOR_ID_WHITE>;
 +			function = "system";
 +			gpios = <&pio 7 GPIO_ACTIVE_LOW>;
 +		};
 +
-+		led@2 {
++		led-2 {
 +			color = <LED_COLOR_ID_WHITE>;
 +			function = "vpn";
 +			gpios = <&pio 43 GPIO_ACTIVE_LOW>;
@@ -4286,10 +4360,10 @@ index 00000000000000..a6b1d3c2874714
 +	status = "okay";
 +};
 diff --git a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
-index 31886924f02bfd..dc21d070fe7f59 100644
+index 922c7cd..f519c1f 100644
 --- a/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
 +++ b/target/linux/mediatek/filogic/base-files/etc/board.d/02_network
-@@ -162,6 +162,9 @@ mediatek_setup_interfaces()
+@@ -182,6 +182,9 @@ mediatek_setup_interfaces()
  	wavlink,wl-wnt100x3-ubootmod)
  		ucidef_set_interfaces_lan_wan eth0 eth1
  		;;
@@ -4300,11 +4374,19 @@ index 31886924f02bfd..dc21d070fe7f59 100644
  	cudy,m3000-v1|\
  	cudy,m3000-v1-ubootmod|\
 diff --git a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
-index 408c404cb4a5a4..08b883f020f444 100644
+index 77b13db..d0fee9e 100644
 --- a/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
 +++ b/target/linux/mediatek/filogic/base-files/lib/upgrade/platform.sh
-@@ -204,6 +204,7 @@ platform_do_upgrade() {
- 	arcadyan,mozart|\
+@@ -241,6 +241,7 @@ platform_do_upgrade() {
+ 	glinet,gl-be14000|\
+ 	glinet,gl-mt2500|\
+ 	glinet,gl-mt2500-airoha|\
++	glinet,gl-mt5000|\
+ 	glinet,gl-mt6000|\
+ 	glinet,gl-x3000|\
+ 	glinet,gl-xe3000|\
+@@ -525,6 +526,7 @@ platform_copy_config() {
+ 	glinet,gl-be14000|\
  	glinet,gl-mt2500|\
  	glinet,gl-mt2500-airoha|\
 +	glinet,gl-mt5000|\
@@ -4312,10 +4394,10 @@ index 408c404cb4a5a4..08b883f020f444 100644
  	glinet,gl-x3000|\
  	glinet,gl-xe3000|\
 diff --git a/target/linux/mediatek/filogic/config-6.18 b/target/linux/mediatek/filogic/config-6.18
-index aefb9d9a075192..fd8b59e4efc804 100644
+index cfe4a1f..847eb17 100644
 --- a/target/linux/mediatek/filogic/config-6.18
 +++ b/target/linux/mediatek/filogic/config-6.18
-@@ -325,6 +325,9 @@ CONFIG_NET_DSA_AN8855=y
+@@ -316,7 +316,11 @@ CONFIG_NET_DSA_AN8855=y
  CONFIG_NET_DSA_MT7530=y
  CONFIG_NET_DSA_MT7530_MDIO=y
  CONFIG_NET_DSA_MT7530_MMIO=y
@@ -4323,22 +4405,23 @@ index aefb9d9a075192..fd8b59e4efc804 100644
 +CONFIG_NET_DSA_REALTEK_MDIO=y
 +CONFIG_NET_DSA_REALTEK_RTL8366UB=y
  CONFIG_NET_DSA_TAG_MTK=y
- CONFIG_NET_EGRESS=y
- CONFIG_NET_FLOW_LIMIT=y
++CONFIG_NET_DSA_TAG_RTL8366UB_8021Q=y
+ CONFIG_NET_DSA_TAG_YT921X=y
+ CONFIG_NET_DSA_TAG_YT922X=y
+ CONFIG_NET_DSA_YT92XX=y
 diff --git a/target/linux/mediatek/image/filogic.mk b/target/linux/mediatek/image/filogic.mk
-index 09893636442531..9c8d18609750d1 100644
+index 01f7ead..880ed50 100644
 --- a/target/linux/mediatek/image/filogic.mk
 +++ b/target/linux/mediatek/image/filogic.mk
-@@ -1937,6 +1937,20 @@ define Device/glinet_gl-mt3600be
+@@ -2164,6 +2164,19 @@ define Device/glinet_gl-mt3600be
  endef
  TARGET_DEVICES += glinet_gl-mt3600be
  
 +define Device/glinet_gl-mt5000
 +  DEVICE_VENDOR := GL.iNet
 +  DEVICE_MODEL := GL-MT5000
-+  DEVICE_DTS := mt7987a-gl-mt5000
++  DEVICE_DTS := mt7987a-glinet-gl-mt5000
 +  DEVICE_DTS_DIR := ../dts
-+  SUPPORTED_DEVICES := glinet,gl-mt5000
 +  DEVICE_PACKAGES := mkf2fs blkid blockdev kmod-fs-ext4 mt7987-2p5g-phy-firmware \
 +                     kmod-mmc kmod-fs-f2fs kmod-fs-vfat
 +  IMAGES += factory.bin
