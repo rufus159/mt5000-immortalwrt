@@ -11,56 +11,103 @@
 #
 # 实测（千兆宽带 PPPoE 满速下载，12 路并发，20 秒采样）:
 #   默认      : 1109-1250 Mbps, CPU0 74%, 单核峰值 100%
-#   本配置    : 1285-1338 Mbps, CPU0 50%, 单核峰值 83%
-#   NET_RX 软中断从「CPU0 独占 26206」变成「CPU2 37507 + CPU3 32998」
+#   本配置    : 1237-1338 Mbps, CPU0 42-50%, 单核峰值 83%
+#   NET_RX 软中断从「CPU0 独占 26206」变成「CPU2 56713 + CPU3 58750」
 #
 # 注意: 吞吐上限仍受单 RX 队列限制（硬件设计），本脚本改善的是
 #       负载分布与稳定性，不是无限提升。
+#
+# 时序说明（实测踩过）:
+#   - mtk_eth 在 probe 早期就创建 napi 线程，但 netifd 拉起接口时驱动会
+#     把亲和性重设回 CPU0，所以必须等网络稳定（约 20s）后再绑。
+#   - OpenWrt 自带 packet_steering 注册了 procd_add_raw_trigger
+#     "interface.*" 1000，每个接口事件后 1 秒重跑并把 rps_cpus 写回 4。
+#     所以本服务也挂了 hotplug 钩子，在它之后把 rps 覆盖回来。
+#   - 因此这里同时做两件事: start() 做一次完整应用（延迟 20s），
+#     并依赖 99-mtk-rx-tune 的 hotplug 钩子在网络事件后重新应用。
 
 START=99
 STOP=10
+NAPI_CPU=1
+RPS_MASK=c
 
-start() {
-	# 等网络接口就绪（最多 30 秒）
-	i=0
-	while [ ! -d /sys/class/net/eth0/queues/rx-0 ] && [ $i -lt 30 ]; do
-		sleep 1
-		i=$((i + 1))
-	done
-
-	# NAPI kthread -> CPU1
-	# 不写死 PID：每次启动编号都会变，按 comm 名匹配
+napi_pids() {
 	for d in /proc/[0-9]*; do
 		case "$(cat "$d/comm" 2>/dev/null)" in
-			napi/mtk_eth*)
-				taskset -pc 1 "${d#/proc/}" >/dev/null 2>&1
-				;;
+			napi/mtk_eth*) echo "${d#/proc/}" ;;
 		esac
 	done
+}
 
-	# 以太网 IRQ -> CPU1（与 NAPI 同核）
+napi_cpus() {
+	for p in $(napi_pids); do
+		awk '/Cpus_allowed_list/ { print $2 }' "/proc/$p/status" 2>/dev/null
+	done
+}
+
+apply_one() {
+	for p in $(napi_pids); do
+		taskset -pc "$NAPI_CPU" "$p" >/dev/null 2>&1
+	done
+
 	for irq in $(awk '/15100000\.ethernet/ { gsub(/:/, "", $1); print $1 }' /proc/interrupts); do
 		echo 1 > "/proc/irq/$irq/smp_affinity_list" 2>/dev/null
 	done
 
-	# RPS -> CPU2 + CPU3 (bitmask 0xc)
 	for dev in eth0 eth1 lan1 lan2; do
 		for q in /sys/class/net/$dev/queues/rx-*; do
-			[ -e "$q/rps_cpus" ] && echo c > "$q/rps_cpus" 2>/dev/null
+			[ -e "$q/rps_cpus" ] && echo "$RPS_MASK" > "$q/rps_cpus" 2>/dev/null
 		done
 	done
+}
 
-	logger -t mtk-rx-tune "NAPI+IRQ->CPU1, RPS->CPU2/3 applied"
+# 反复应用直到所有 napi 线程确实在 CPU1（应对驱动/packet_steering 覆盖）
+apply_until_stable() {
+	local attempt=0 ok=0 p allowed
+
+	while [ $attempt -lt 15 ]; do
+		apply_one
+		sleep 2
+
+		ok=1
+		for p in $(napi_pids); do
+			allowed=$(awk '/Cpus_allowed_list/ { print $2 }' "/proc/$p/status" 2>/dev/null)
+			[ "$allowed" = "$NAPI_CPU" ] || ok=0
+		done
+		[ $ok -eq 1 ] && break
+		attempt=$((attempt + 1))
+	done
+
+	logger -t mtk-rx-tune "applied (retries=$attempt ok=$ok) napi=[$(napi_cpus | tr '\n' ' ')] rps=$(cat /sys/class/net/eth0/queues/rx-0/rps_cpus 2>/dev/null)"
+}
+
+start() {
+	# 等 eth0 队列 + napi 线程出现
+	local i=0
+	while [ ! -d /sys/class/net/eth0/queues/rx-0 ] && [ $i -lt 30 ]; do
+		sleep 1; i=$((i + 1))
+	done
+
+	i=0
+	while [ -z "$(napi_pids)" ] && [ $i -lt 30 ]; do
+		sleep 1; i=$((i + 1))
+	done
+
+	# 等 netifd 把接口全部拉起（这段期间驱动会重置亲和性）
+	sleep 20
+
+	apply_until_stable
+}
+
+reload() {
+	apply_until_stable
 }
 
 stop() {
-	# 恢复内核默认：NAPI/IRQ 放开到全部核，RPS 回 4 (CPU2)
-	for d in /proc/[0-9]*; do
-		case "$(cat "$d/comm" 2>/dev/null)" in
-			napi/mtk_eth*)
-				taskset -pc 0-3 "${d#/proc/}" >/dev/null 2>&1
-				;;
-		esac
+	local p q dev irq
+
+	for p in $(napi_pids); do
+		taskset -pc 0-3 "$p" >/dev/null 2>&1
 	done
 
 	for irq in $(awk '/15100000\.ethernet/ { gsub(/:/, "", $1); print $1 }' /proc/interrupts); do
@@ -73,5 +120,5 @@ stop() {
 		done
 	done
 
-	logger -t mtk-rx-tune "reverted to kernel defaults"
+	logger -t mtk-rx-tune "stopped, reverted to kernel defaults"
 }
