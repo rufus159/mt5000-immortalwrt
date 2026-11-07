@@ -192,10 +192,18 @@ DEFAULT_PACKAGES.tweak:= block-mount default-settings-chn kmod-nf-nathelper luci
 |---|---|
 | `luci` | LuCI 全套（`luci-light` + 软件包管理，含 `uhttpd` 与 bootstrap 主题）|
 | `block-mount` | 开机自动挂载磁盘（`fstab` 生效）|
-| `default-settings-chn` | 中国化默认设置（软件源 / NTP / 时区）|
+| `default-settings-chn` | 中国化默认设置（apk 源切国内镜像 / NTP / 时区 `CST-8`）|
 | `kmod-nf-nathelper` | FTP/SIP 等老协议的 NAT 穿透 |
 
 外加少量基础增强：`bash` / `curl` / `ip-full` / `autocore`（CPU 型号、频率、温度状态页）。
+
+> `default-settings-chn` 会改写软件源：把 `/etc/apk/repositories.d/distfeeds.list`
+> 里的 `https://downloads.immortalwrt.org` 换成 `https://mirrors.vsean.net/openwrt`。
+> 这是 **ImmortalWrt 项目自己的镜像入口**（302 跳转到北大开源镜像站
+> `mirrors.pku.edu.cn/immortalwrt`），不是第三方源；本目标快照的包索引
+> （`snapshots/targets/mediatek/filogic/packages/packages.adb`）实测两边都返回 200。
+> 要换源只需预置 `system.@imm_init[0].apk_mirror`——上游脚本在这项为空时才填默认
+> 值，随后用它去替换 `downloads.immortalwrt.org` 前缀。
 
 **刻意不编入**的（对照组）：USB 上网卡全家桶（`kmod-usb-net-*` / `uqmi` / `umbim`）、
 所有透明代理相关（`v2ray-geoip/geosite`、`kmod-nft-tproxy`、`kmod-sched-bpf`、
