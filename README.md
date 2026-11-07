@@ -357,8 +357,8 @@ git rebase master        # 或 git merge master
 | 输入 | 默认 | 说明 |
 |---|---|---|
 | `iwrt_ref` | 空 | 留空用默认基线 `4765b65762`（2026-11-05，内核 6.18，有 PPE 加速）|
-| `lan_ip` | `10.0.0.1` | 默认 LAN 地址 |
-| `root_password` | `root` | 建议改掉 |
+| `lan_ip` | `192.168.5.1` | 默认 LAN 地址（preinit/failsafe 同样生效） |
+| `root_password` | 空 | 默认不设密码，刷机后 root 直接登录；需要密码时自行填写 |
 | `extra_services` | `none` | 附加服务：`none` / `mwan3` / `docker` / `docker+mwan3` |
 | `extra_packages` | 空 | 额外编入的官方包，空格分隔 |
 
@@ -366,6 +366,8 @@ git rebase master        # 或 git merge master
    2.5–3 小时；完成后在 **Artifacts** 或 **Release** 下载
    `*glinet_gl-mt5000-squashfs-sysupgrade.bin`
 5. 刷机：原厂固件升级页上传，或 SSH 内 `sysupgrade -n <image>`
+6. 首次登录：浏览器打开 `http://192.168.5.1`，账号 `root`，**默认无密码**
+   （需要预置密码时在 Run workflow 里填 `root_password`）
 
 > 注意：`workflow_dispatch` 的 inputs 有 **25 个上限**（原作者写到 26 个，手动
 > 触发一直被 API 拒绝，HTTP 422）。本仓库现在只剩 18 个，因为把双基线

@@ -65,7 +65,7 @@ step_banner() {
 IWRT_REF=${IWRT_REF:-}
 SRC_DIR=${SRC_DIR:-$REPO_ROOT/immortalwrt}
 
-LAN_IP=${LAN_IP:-10.0.0.1}
+LAN_IP=${LAN_IP:-192.168.5.1}
 TIMEZONE=${TIMEZONE:-Asia/Shanghai}
 UI_LANG=${UI_LANG:-zh-cn}
 ROOTFS_SIZE=${ROOTFS_SIZE:-2048}
@@ -85,7 +85,9 @@ LAN_IPV6_DNS=${LAN_IPV6_DNS:-false}
 # 注意：不能叫 HOSTNAME —— bash 会把它设成本机主机名（实测 thinkbook16s），
 # ${HOSTNAME:-ImmortalWrt} 永远取不到默认值，固件里会被刷成编译机的主机名。
 ROUTER_HOSTNAME=${ROUTER_HOSTNAME:-ImmortalWrt}
-ROOT_PASSWORD=${ROOT_PASSWORD:-root}
+# 默认不设 root 密码（与 workflow 的 root_password 默认空保持一致）。
+# 只有显式传入 ROOT_PASSWORD=xxx 或 --root-password xxx 才会写 /etc/shadow。
+ROOT_PASSWORD=${ROOT_PASSWORD:-}
 
 EXTRA_FEEDS=${EXTRA_FEEDS:-}
 EXTRA_PACKAGES=${EXTRA_PACKAGES:-}
@@ -121,9 +123,9 @@ build-local.sh — 本地编译 GL.iNet MT5000 (Brume 3) 的 ImmortalWrt 固件
   --dry-run                   只打印解析后的配置，不执行
 
 网络与系统（对应 workflow 同名 input）：
-  --lan-ip <ip>               默认 LAN IP（默认 10.0.0.1）
+  --lan-ip <ip>               默认 LAN IP（默认 192.168.5.1）
   --hostname <name>           主机名（默认 ImmortalWrt）
-  --root-password <pw>        root 密码（默认 root；空字符串=不设密码）
+  --root-password <pw>        root 密码（默认空 = 无密码；传入才设置）
   --timezone <tz>             时区（默认 Asia/Shanghai）
   --lang zh-cn|en             LuCI 语言（默认 zh-cn）
   --rootfs-size <MB>          软件包分区大小（默认 2048）
@@ -300,6 +302,8 @@ print_config() {
     printf '  %-13s %s\n' "jobs"         "$JOBS  ($JOBS_NOTE)"
     printf '  %-13s %s\n' "lan ip"       "$LAN_IP"
     printf '  %-13s %s\n' "hostname"     "$ROUTER_HOSTNAME"
+    if [ -n "$ROOT_PASSWORD" ]; then RP_NOTE='已设置(不回显)'; else RP_NOTE='空(无密码)'; fi
+    printf '  %-13s %s\n' "root passwd"  "$RP_NOTE"
     printf '  %-13s %s\n' "timezone"     "$TIMEZONE / $UI_LANG"
     printf '  %-13s %s\n' "rootfs size"  "${ROOTFS_SIZE} MB"
     printf '  %-13s %s\n' "luci"         "luci 全套 (seed 固定, 含 uhttpd)"

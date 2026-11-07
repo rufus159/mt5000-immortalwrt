@@ -6,13 +6,13 @@ CONFIG_TARGET_mediatek_filogic_DEVICE_glinet_gl-mt5000=y
 # Rootfs size (8GB eMMC, leave headroom for extra packages)
 CONFIG_TARGET_ROOTFS_PARTSIZE=2048
 
-# Default LAN IP 10.0.0.1 (official base-files mechanism, also covers failsafe/preinit)
+# Default LAN IP 192.168.5.1 (official base-files mechanism, also covers failsafe/preinit)
 CONFIG_IMAGEOPT=y
 CONFIG_TARGET_DEFAULT_LAN_IP_FROM_PREINIT=y
 CONFIG_PREINITOPT=y
-CONFIG_TARGET_PREINIT_IP="10.0.0.1"
+CONFIG_TARGET_PREINIT_IP="192.168.5.1"
 CONFIG_TARGET_PREINIT_NETMASK="255.255.255.0"
-CONFIG_TARGET_PREINIT_BROADCAST="10.0.0.255"
+CONFIG_TARGET_PREINIT_BROADCAST="192.168.5.255"
 
 # ============================================================================
 # 25.12 filogic 默认包集补齐（关键区段，勿删）
