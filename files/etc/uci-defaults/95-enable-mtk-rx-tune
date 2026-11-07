@@ -1,0 +1,8 @@
+#!/bin/sh
+# 首启启用 mtk-rx-tune 服务（RX 路径性能调优）。
+# 详见 files/etc/init.d/mtk-rx-tune 内的实测数据与原理说明。
+
+/etc/init.d/mtk-rx-tune enable 2>/dev/null
+/etc/init.d/mtk-rx-tune start 2>/dev/null
+
+exit 0

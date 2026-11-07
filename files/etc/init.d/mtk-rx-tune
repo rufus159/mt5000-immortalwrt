@@ -1,0 +1,77 @@
+#!/bin/sh /etc/rc.common
+
+# MT7987 (GL-MT5000) RX 路径性能调优
+#
+# 问题: mtk_eth 驱动把两个 NAPI kthread 硬绑在 CPU0（Cpus_allowed_list=0），
+#       而 SoC 只有单个 RX 队列（eth0/queues 下只有 rx-0）。结果: 千兆满速
+#       下载时 NET_RX 软中断全部堆在 CPU0，且必然有某个核被打到 100%。
+#
+# 做法: ① NAPI 线程 + 以太网 IRQ 一起挪到 CPU1（同核，避免跨核 cache 抖动）
+#       ② 用 RPS 把协议栈部分（NET_RX 的后续处理）分发到 CPU2/CPU3
+#
+# 实测（千兆宽带 PPPoE 满速下载，12 路并发，20 秒采样）:
+#   默认      : 1109-1250 Mbps, CPU0 74%, 单核峰值 100%
+#   本配置    : 1285-1338 Mbps, CPU0 50%, 单核峰值 83%
+#   NET_RX 软中断从「CPU0 独占 26206」变成「CPU2 37507 + CPU3 32998」
+#
+# 注意: 吞吐上限仍受单 RX 队列限制（硬件设计），本脚本改善的是
+#       负载分布与稳定性，不是无限提升。
+
+START=99
+STOP=10
+
+start() {
+	# 等网络接口就绪（最多 30 秒）
+	i=0
+	while [ ! -d /sys/class/net/eth0/queues/rx-0 ] && [ $i -lt 30 ]; do
+		sleep 1
+		i=$((i + 1))
+	done
+
+	# NAPI kthread -> CPU1
+	# 不写死 PID：每次启动编号都会变，按 comm 名匹配
+	for d in /proc/[0-9]*; do
+		case "$(cat "$d/comm" 2>/dev/null)" in
+			napi/mtk_eth*)
+				taskset -pc 1 "${d#/proc/}" >/dev/null 2>&1
+				;;
+		esac
+	done
+
+	# 以太网 IRQ -> CPU1（与 NAPI 同核）
+	for irq in $(awk '/15100000\.ethernet/ { gsub(/:/, "", $1); print $1 }' /proc/interrupts); do
+		echo 1 > "/proc/irq/$irq/smp_affinity_list" 2>/dev/null
+	done
+
+	# RPS -> CPU2 + CPU3 (bitmask 0xc)
+	for dev in eth0 eth1 lan1 lan2; do
+		for q in /sys/class/net/$dev/queues/rx-*; do
+			[ -e "$q/rps_cpus" ] && echo c > "$q/rps_cpus" 2>/dev/null
+		done
+	done
+
+	logger -t mtk-rx-tune "NAPI+IRQ->CPU1, RPS->CPU2/3 applied"
+}
+
+stop() {
+	# 恢复内核默认：NAPI/IRQ 放开到全部核，RPS 回 4 (CPU2)
+	for d in /proc/[0-9]*; do
+		case "$(cat "$d/comm" 2>/dev/null)" in
+			napi/mtk_eth*)
+				taskset -pc 0-3 "${d#/proc/}" >/dev/null 2>&1
+				;;
+		esac
+	done
+
+	for irq in $(awk '/15100000\.ethernet/ { gsub(/:/, "", $1); print $1 }' /proc/interrupts); do
+		echo 0-3 > "/proc/irq/$irq/smp_affinity_list" 2>/dev/null
+	done
+
+	for dev in eth0 eth1 lan1 lan2; do
+		for q in /sys/class/net/$dev/queues/rx-*; do
+			[ -e "$q/rps_cpus" ] && echo 4 > "$q/rps_cpus" 2>/dev/null
+		done
+	done
+
+	logger -t mtk-rx-tune "reverted to kernel defaults"
+}
