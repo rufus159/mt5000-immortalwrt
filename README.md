@@ -20,47 +20,39 @@
 （GL.iNet `GLiNet-Tech`，作者 John Crispin），GPL-2.0。
 
 802.1Q tagger / MTK PPE 卸载的独立参考实现：
-**[Beaverfffan/x-wrt-push](https://github.com/Beaverfffan/x-wrt-mt5000)**。
+**[Beaverfffan/x-wrt-mt5000](https://github.com/Beaverfffan/x-wrt-mt5000)**。
 
 ---
 
 ## 基于哪个版本的源码
 
-补丁分两套，各针对一个 ImmortalWrt 基线：
+补丁只针对一个 ImmortalWrt 基线：
 
-| profile | ImmortalWrt 基线 commit | 日期 | 内核 | 补丁目录 |
-|---|---|---|---|---|
-| `master` | `f44d1535b4ef107a4ee255caa43cf101daf9fa35` | 2026-09-18 | **6.18** | `patches/` |
-| `25.12` | `84b665b5de552e297d0f7d755b88a46fc0cfeb13` | 2026-10-23 | 6.12 | `patches-25.12/` |
+| ImmortalWrt 基线 commit | 日期 | 内核 | 补丁目录 |
+|---|---|---|---|
+| `f44d1535b4ef107a4ee255caa43cf101daf9fa35`（`master`） | 2026-09-18 | **6.18** | `patches/` |
 
-两个基线都是 ImmortalWrt 的 `Merge Official Source` 提交点（同步上游 OpenWrt）。
-`master` 基线可用 `iwrt_ref` 输入覆盖为任意 ImmortalWrt commit。
+该基线是 ImmortalWrt 的 `Merge Official Source` 提交点（同步上游 OpenWrt）。
+可用 `iwrt_ref` 输入覆盖为任意 ImmortalWrt commit。
 
----
+### 基线是冻结的，上游是滚动的
 
-## ⚠️ 两个 profile 能力不同（重要）
+`master` 基线 `f44d1535b4`（2026-09-18）是当时的 `master` HEAD，冻结后上游又走了
+**1831 个提交**。冻结是刻意的——补丁链依赖 `795-10` 等文件的确切内容，基线一动
+就得重做 rebase；但它也意味着**拿不到这期间的上游修复**。
 
-| | `master`（6.18） | `25.12`（6.12） |
-|---|---|---|
-| 设备支持 | ✅ | ✅ |
-| RTL8366UB DSA 交换机 | ✅ | ✅ |
-| **PPE 硬件加速** | ✅ **有** | ❌ **没有** |
-| 实测 WAN 吞吐 | **千兆宽带 1238–1274 Mbpss** | 未验证 |
+升级基线时：把新 SHA 填进 `iwrt_ref` 试跑，若补丁 apply 失败，说明上游动过我们
+改的那几行（已知高风险点：`mtk_ppe_offload.c` 的 DSA 端口→TX queue 映射，
+上游 `795-05~07` 正在改同一批代码位置），需要重新生成对应的 hunk。
 
-**为什么 25.12 没有 PPE 加速**：
+workflow 在 `Clone ImmortalWrt source` 步骤会：
 
-- `patches/` 的 `795-11` 改的是 `mtk_ppe_offload.c`，让 PPE 认得
-  `DSA_TAG_PROTO_RTL8366UB_8021Q`（实测 **7 处**相关改动，含
-  `mtk_flow_get_dsa_port()` 的 case 分支与 `mtk_flow_set_output_device()`）
-- `patches-25.12/` 的 `795-11` 文件名叫
-  `net-mediatek-use-native-dsa-special-tags`，内容只是**限制 MTK 原生特殊标签
-  只对 MTK tagger 生效**，`mtk_ppe_offload.c` **一行未改**（实测 0 处）
-
-25.12 的 tagger 会保留标准 EtherType 让 PPE 能解析帧头，但**没有向 PPE 注册
-DSA 端口映射**，因此路由转发仍走 CPU。
-
-**结论**：要硬件加速用 `master`；要 25.12 稳定线则接受无硬件加速。
-`patches/0006`（统计修复）目前只对 `master` 有效，25.12 需单独生成。
+- 校验 pin 的 SHA 是否真在仓库里，不存在则**立即失败**并打印当前可用的
+  分支 HEAD（可直接复制进 `iwrt_ref`），不让问题拖到 40 分钟后编译阶段
+- 若 SHA 存在但已是**悬空对象**（上游 force-push/rebase 过，下次 gc 就没），
+  打 `::warning::` 但继续构建
+- 把实际解析出的 `BASE_SHA` + 提交时间写进 Step Summary 和 Release 说明，
+  避免"分支 HEAD 动了导致同一 pin 编出不同固件"这类不可追溯问题
 
 ---
 
@@ -155,7 +147,7 @@ eth0（交换机 CPU 口）：压测期间无增长        ← 证明不经 CPU
 | `wukongdaily/luci-app-run` | **无条件追加** | ❌ 关闭（`enable_luci_app_run`，需手动开）|
 | `linkease/istore` | `enable_store` 默认 `true` | ❌ 关闭（默认 `false`）|
 | `linkease/nas-packages` | `enable_quickstart` | 原本就默认关 |
-| `kenzok8/openwrt-daede` | `bake_daede` | 原本就默认关 |
+| `kenzok8/openwrt-daede` | `bake_daede` | ❌ **已移除**（连带 `enable_honk`，两者依赖内核 BTF，已一并删除）|
 
 ### 原配方实际多装了什么（本机实测）
 
@@ -173,12 +165,83 @@ luci-i18n-argon-config-zh-cn-...       同上
 
 本仓库默认构建**移除以上全部**，固件内容 = 官方源默认包集。
 
+### ⚠️ 为什么 seed 里必须显式写 `luci`
 
+ImmortalWrt 的 `include/target.mk` 里，**`master` 把这行注释掉了，`25.12` 是启用的**：
 
+```make
+# master
+# DEFAULT_PACKAGES += $(DEFAULT_PACKAGES.tweak)
+# openwrt-25.12
+DEFAULT_PACKAGES += $(DEFAULT_PACKAGES.tweak)
+```
+
+而 tweak 段的内容正是（25.12）：
+
+```make
+DEFAULT_PACKAGES.tweak:= block-mount default-settings-chn kmod-nf-nathelper luci
+```
+
+**后果**：基于 `master` 直接编，固件里没有任何 LuCI —— 没有 `uhttpd`、没有
+`luci-mod-*`、没有主题，刷完只能 SSH，**无法通过 web 管理**。
+
+所以 `config/mt5000.seed` 显式补齐了 25.12 的 tweak 段：
+
+| 包 | 作用 |
+|---|---|
+| `luci` | LuCI 全套（`luci-light` + 软件包管理，含 `uhttpd` 与 bootstrap 主题）|
+| `block-mount` | 开机自动挂载磁盘（`fstab` 生效）|
+| `default-settings-chn` | 中国化默认设置（软件源 / NTP / 时区）|
+| `kmod-nf-nathelper` | FTP/SIP 等老协议的 NAT 穿透 |
+
+外加少量基础增强：`bash` / `curl` / `ip-full` / `autocore`（CPU 型号、频率、温度状态页）。
+
+**刻意不编入**的（对照组）：USB 上网卡全家桶（`kmod-usb-net-*` / `uqmi` / `umbim`）、
+所有透明代理相关（`v2ray-geoip/geosite`、`kmod-nft-tproxy`、`kmod-sched-bpf`、
+内核 BTF）、`ttyd`、`luci-app-diskman/openclash/rclone`。
+这些只为缩短构建时间与固件体积，需要时在 seed 里加一行即可恢复。
+
+CI 与 `scripts/build-local.sh` 的 sanity check 都会校验上面四个对齐项，
+少一个直接报错，避免"又编出一个没有 web 的固件"。
+
+### 内核调试：dynamic debug（已开启）
+
+`config/mt5000.seed` 里开了 `CONFIG_KERNEL_DYNAMIC_DEBUG=y`（连带
+`CONFIG_KERNEL_DEBUG_FS=y`），把 `pr_debug()` / `dev_dbg()` 编进内核，
+**运行时**按源文件 / 函数 / 行号 / 模块开关日志，不用重编内核。
+
+代价是内核 text 约 +2%（几 MB），默认全部关闭，对正常转发零开销。
+
+```bash
+# debugfs 已由 /etc/init.d/boot 自动挂到 /sys/kernel/debug
+CTL=/sys/kernel/debug/dynamic_debug/control
+
+# 打开某个驱动的调试日志
+echo 'file mtk_eth_soc.c +p' > $CTL
+dmesg -w | grep -i -E 'mtk|ppe'
+
+# 只看某个函数 / 模块
+echo 'func mtk_flow_offload +p' > $CTL
+echo 'module rtl8366ub +p'      > $CTL
+
+# 看当前有哪些可开关的点
+grep -c '=_' $CTL          # 未开启的可调点数量
+grep '=p' $CTL             # 已开启的
+
+# 收工，全部关掉（不重启也能恢复干净状态）
+echo 'file * -p' > $CTL
+```
+
+内核启动参数里也能预置，例如 `dyndbg="file mtk_eth_soc.c +p"`。
+定位完问题后把 seed 里那行删掉即可回到原来的镜像。
+
+---
 
 ## 本仓库相对原作者的全部改动
 
-### 1. 配置精简（纯减法）
+### 1. 配置精简（减法为主，少量加法）
+
+**减法**：
 
 | 项 | 原因 |
 |---|---|
@@ -187,6 +250,18 @@ luci-i18n-argon-config-zh-cn-...       同上
 | `luci-app-store` / iStore / `taskd` / `luci-lib-*` | 第三方源，默认关闭 |
 | `luci-app-run` | 第三方源，默认关闭 |
 | `luci-theme-argon` | 第三方主题，默认用 bootstrap |
+| USB 上网卡全家桶（`kmod-usb-net-*` / `uqmi` / `umbim` / `kmod-usb-serial*`）| 不用 USB 4G/5G 模块，约 20 个内核模块 |
+| 透明代理相关（`v2ray-geoip/geosite`、`kmod-nft-tproxy`、`kmod-sched-bpf`、`kmod-xdp-sockets-diag`、`kmod-veth`、`kmod-nft-queue`、内核 BTF）| 只做有线路由，BTF 还是内核编译时间的大头 |
+| `ttyd` / `luci-app-ttyd` / `luci-app-diskman` / `luci-app-openclash` / `luci-app-rclone` | 非必需；rclone 会拖进整套 Ruby（约 10 个包）|
+| daede / honk 整套功能（workflow 的 `bake_daede`、`enable_honk` 输入 + `config/honk/`）| 依赖内核 BTF，已随 BTF 一并彻底移除 |
+
+**加法**（补齐 25.12 默认包集，否则没有 web 管理）：
+
+| 包 | 原因 |
+|---|---|
+| `luci` / `block-mount` / `default-settings-chn` / `kmod-nf-nathelper` | master 的 `target.mk` 不追加 `DEFAULT_PACKAGES.tweak`，必须显式写出，详见上一节 |
+| `bash` / `curl` / `ip-full` / `autocore` | 基础增强 + CPU 状态页 |
+| `CONFIG_KERNEL_DYNAMIC_DEBUG` + `CONFIG_KERNEL_DEBUG_FS` | 内核调试：`pr_debug` 运行时按文件/函数开关，排障用，见上文「内核调试」一节 |
 
 ### 2. DSA 端口统计修复（`patches/0006`，仅 master）
 
@@ -259,7 +334,7 @@ git rebase master        # 或 git merge master
 
 | 输入 | 默认 | 说明 |
 |---|---|---|
-| `iwrt_profile` | `master` | `master`（6.18，**有 PPE 加速**）/ `25.12`（6.12，无加速）|
+| `iwrt_ref` | 空 | 留空用 master 默认基线 `f44d1535b4`（内核 6.18，有 PPE 加速）|
 | `lan_ip` | `10.0.0.1` | 默认 LAN 地址 |
 | `root_password` | `root` | 建议改掉 |
 | `enable_store` | **`false`** | iStore（第三方源）|
@@ -270,11 +345,80 @@ git rebase master        # 或 git merge master
    `*glinet_gl-mt5000-squashfs-sysupgrade.bin`
 5. 刷机：原厂固件升级页上传，或 SSH 内 `sysupgrade -n <image>`
 
+> 注意：workflow 用的是 26 个 inputs 压到 25 个之后的合并项 —— `enable_store` /
+> `enable_quickstart` 已合并成 `store_mode`（`none` / `store` / `quickstart`）。
+> GitHub 对 `workflow_dispatch` 有 25 个输入上限，原作者写到 26 个导致手动
+> 触发一直被 API 拒绝（HTTP 422），这也是历史上从没成功手动跑过一次的原因。
+
+---
+
+## 本地编译
+
+`scripts/build-local.sh` 把 CI 的 597 行构建逻辑抽了出来，CI 和本地跑同一套
+流程。改补丁后不必等 2.5 小时的 CI，本地增量编译通常 10–30 分钟。
+
+```bash
+./scripts/build-local.sh --help          # 全部参数
+./scripts/build-local.sh                 # 全默认，编 master
+./scripts/build-local.sh --from build    # 改完补丁后只重编
+./scripts/build-local.sh --jobs 9        # 内存小的机器手动降并行度
+```
+
+### 环境要求
+
+| 项 | 要求 | 说明 |
+|---|---|---|
+| 系统 | Linux / WSL2 | **不能在 `/mnt/c`、`/mnt/e` 等 Windows 盘上编译** |
+| 文件系统 | **大小写敏感** | OpenWrt 的 `prereq-build.mk` 有 `case-sensitive-fs` 硬检查，SMB / NTFS 上必失败 |
+| 磁盘 | ≥ 45G | `build_dir` 20–40G + `dl` 2.5G + `staging_dir` 4G |
+| 内存 | 每并行进程约 1.3G | 脚本按内存自动算 `-j`，不够会警告 |
+| umask | 022 | 否则打出来的包权限错乱 |
+
+依赖（Debian/Ubuntu）：
+
+```bash
+sudo apt install -y --no-install-recommends \
+  build-essential gcc-multilib g++-multilib ccache \
+  libncurses-dev zlib1g-dev libssl-dev libelf-dev libltdl-dev \
+  libmpc-dev libmpfr-dev libgmp-dev libpython3-dev libreadline-dev \
+  bison flex gettext gawk pkg-config rsync unzip bzip2 patch \
+  subversion swig python3 python3-ply python3-docutils python3-pyelftools \
+  device-tree-compiler cpio squashfs-tools mkisofs xxd \
+  autoconf automake autopoint libtool libglib2.0-dev libyaml-dev \
+  intltool help2man ack nano wget curl git
+```
+
+### 与 CI 的差异
+
+本地脚本刻意不做 GitHub 专属的事（缓存 prune/restore、artifact 上传、Release
+发布）。此外：
+
+- **ccache 上限放大到 5G**（CI 限 1G 是因为仓库缓存总配额 10G）
+- **支持 `--from <step>` 断点续跑**，CI 每次都从头
+- **并行度按内存而非核数决定**，避免容器/虚拟机里 OOM
+- **补丁步骤幂等**：用 `base SHA + 补丁清单` 做标记，重复跑会跳过；
+  换配置档时会自动把代码树重置回基线再重打（`build_dir`/`staging_dir` 不受影响）
+
+### 断点续跑
+
+| `--from` | 适用场景 |
+|---|---|
+| `validate` | 默认，从头 |
+| `clone` | 只重新 checkout 基线 |
+| `patch` | 改了补丁文件 |
+| `overlay` | 改了 `files/` 或 feed 开关 |
+| `config` | 改了 `config/mt5000.seed` 或 Kconfig 选项 |
+| `uci` | 改了时区/主机名/密码/IPv6 等运行参数 |
+| `download` | 只重新下载依赖包 |
+| `build` | 快速迭代：源码、补丁、配置都没动 |
+
 ---
 
 ## 已知问题
 
 仍在测试中
+
+---
 
 ## 许可
 

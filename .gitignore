@@ -1,2 +1,10 @@
 .mimosa/
 dist/
+
+# 本地编译目录（build-local.sh 的默认 --src/输出位置）。
+# 源码树里有 dl/（2.5G）、build_dir/、staging_dir/、bin/，都不该进版本库。
+/immortalwrt/
+
+# build-local.sh 的运行态标记
+.mt5000-patches.applied
+.mt5000-newfiles.tmp

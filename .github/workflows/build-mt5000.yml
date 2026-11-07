@@ -3,16 +3,8 @@ name: Build ImmortalWrt for GL.iNet MT5000
 on:
   workflow_dispatch:
     inputs:
-      iwrt_profile:
-        description: '基础版本配置档 (master=滚动快照,内核 6.18; 25.12=稳定版,内核 6.12)'
-        required: false
-        default: 'master'
-        type: choice
-        options:
-          - master
-          - '25.12'
       iwrt_ref:
-        description: 'ImmortalWrt 基础版本 (commit/tag/branch; 留空则用 iwrt_profile 默认基线: master→f44d1535b4, 25.12→84b665b5de; 显式填写时优先, 但需自行确保补丁能套用)'
+        description: 'ImmortalWrt 基线 commit (留空则用 master 默认基线 f44d1535b4; 显式填写时优先, 但需自行确保补丁能套用)'
         required: false
         default: ''
         type: string
@@ -52,14 +44,6 @@ on:
           - '2048'
           - '4096'
           - '8192'
-      luci_flavor:
-        description: 'LuCI 套件'
-        required: false
-        default: 'full'
-        type: choice
-        options:
-          - full
-          - light
       store_mode:
         description: 'iStore 相关（none=都不装(默认,纯官方源); store=只装 iStore; quickstart=iStore+quickstart 首页）'
         required: false
@@ -71,16 +55,6 @@ on:
           - 'quickstart'
       enable_luci_app_run:
         description: '集成 luci-app-run 网页安装器（引入 wukongdaily 第三方源）'
-        required: false
-        default: false
-        type: boolean
-      bake_daede:
-        description: '将 daede(dae/daed 代理)编译进固件 (否则刷机后脚本安装)'
-        required: false
-        default: false
-        type: boolean
-      enable_honk:
-        description: '集成 honk 代理(daeuniverse 官方 apk 源, WAN 首次联网后自动安装; 内置 doona 面板 http://LAN_IP:9090/ui/; 与 bake_daede 互斥、与 dae 不能共存; 运行依赖已编入固件, 需内核 >=6.12, 两配置档均满足)'
         required: false
         default: false
         type: boolean
@@ -166,11 +140,6 @@ on:
         required: false
         default: ''
         type: string
-      luci_extra_apps:
-        description: '集成 LuCI 应用清单 (config/luci-extra.seed: argon 主题(3.0 设置已内置)/diskman/openclash/rclone/ttyd/upnp; passwall 已注释停用)'
-        required: false
-        default: true
-        type: boolean
 
 # 同一 ref 只保留一个构建。历史上 5 次 cancelled 都是重复点 Run workflow
 # 后旧任务被人工取消，白白烧掉 300+ 分钟 runner 时间。开了这个以后新任务
@@ -188,13 +157,22 @@ jobs:
       actions: write    # Prune stale caches 需要删除缓存
 
     env:
-      IWRT_PROFILE: ${{ github.event.inputs.iwrt_profile || 'master' }}
-      IWRT_REF: ${{ github.event.inputs.iwrt_ref }}
+      # 基线解析必须发生在 job 级 env 表达式里，而不是某个 step 里。
+      # 原因：Prune stale caches 是第 1 个 step，它的缓存 key 依赖
+      # IWRT_REF。如果像之前那样在 Validate inputs（第 6 个 step）里才
+      # echo IWRT_REF=... >> GITHUB_ENV，Prune 运行时 IWRT_REF 还是空串，
+      # key 匹配变成 "dl--*"/"stage--*"，一个都匹配不上——实测会把当前
+      # 基线刚存下的缓存也误删（r11 日志: keeping: dl--* and stage--*）。
+      # GitHub 表达式在 job 启动时就求值，所有 step 从一开始就能读到。
+      IWRT_REF: ${{ github.event.inputs.iwrt_ref || 'f44d1535b4' }}
+      # 并行度：ubuntu-24.04 标准 runner 是 4 vCPU / 16G。
+      # nproc+1 = 5 对 16G 是安全的；但显式写在 env 里可复现、可调，
+      # 比散落在各 step 里的 $(nproc)+1 更可维护。
+      BUILD_JOBS: 5
       LAN_IP: ${{ github.event.inputs.lan_ip || '10.0.0.1' }}
       TIMEZONE: ${{ github.event.inputs.timezone || 'Asia/Shanghai' }}
       UI_LANG: ${{ github.event.inputs.ui_lang || 'zh-cn' }}
       ROOTFS_SIZE: ${{ github.event.inputs.rootfs_size || '2048' }}
-      LUCI_FLAVOR: ${{ github.event.inputs.luci_flavor || 'full' }}
       # store_mode 是三态 choice（none/store/quickstart），在这里派生成原来
       # 两个独立 boolean，下游所有 ENABLE_STORE / ENABLE_QUICKSTART 判断不变。
       # 原因：GitHub 对 workflow_dispatch 的 inputs 有 25 个上限，原作者写到了
@@ -203,8 +181,6 @@ jobs:
       ENABLE_STORE: ${{ (github.event.inputs.store_mode == 'store' || github.event.inputs.store_mode == 'quickstart') && 'true' || 'false' }}
       ENABLE_QUICKSTART: ${{ github.event.inputs.store_mode == 'quickstart' && 'true' || 'false' }}
       ENABLE_LUCI_APP_RUN: ${{ github.event.inputs.enable_luci_app_run || 'false' }}
-      BAKE_DAEDE: ${{ github.event.inputs.bake_daede }}
-      ENABLE_HONK: ${{ github.event.inputs.enable_honk }}
       EXTRA_SERVICES: ${{ github.event.inputs.extra_services || 'none' }}
       PPPOE: ${{ github.event.inputs.pppoe }}
       PPPOE_USERNAME: ${{ github.event.inputs.pppoe_username }}
@@ -217,7 +193,6 @@ jobs:
       LAN_IPV6_DNS: ${{ github.event.inputs.lan_ipv6_dns || 'false' }}
       HOSTNAME: ${{ github.event.inputs.hostname || 'ImmortalWrt' }}
       ROOT_PASSWORD: ${{ github.event.inputs.root_password }}
-      LUCI_EXTRA_APPS: ${{ github.event.inputs.luci_extra_apps }}
       EXTRA_FEEDS: ${{ github.event.inputs.extra_feeds }}
       EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages }}
 
@@ -235,6 +210,14 @@ jobs:
         run: |
           # 保留当前基线的 dl-/stage- 缓存，删掉其它基线的，避免 10G 配额
           # 被上一版工具链占满后把 dl/ 挤出去（LRU 淘汰）。
+          #
+          # 防御：IWRT_REF 现在由 job 级 env 表达式解析，理论上这里非空；
+          # 但万一为空（例如表达式未来被改坏），宁可什么都不删，也不能
+          # 用空串匹配把全部缓存删光。
+          if [ -z "$IWRT_REF" ]; then
+            echo "IWRT_REF 为空，跳过 prune（不删任何缓存）"
+            exit 0
+          fi
           echo "keeping: dl-${IWRT_REF}-* and stage-${IWRT_REF}-*"
           gh api "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
             --jq '.actions_caches[] | "\(.id) \(.key)"' > /tmp/caches.txt 2>/dev/null || : > /tmp/caches.txt
@@ -279,6 +262,11 @@ jobs:
 
       - name: Install build dependencies
         run: |
+          # GitHub runner 在 Azure 美国机房，archive.ubuntu.com 偶发被限速
+          # （r29 实测 30.4 kB/s，装了 30 分钟；正常是 6 秒）。
+          # 换成 azure.archive.ubuntu.com 同机房镜像，异常时自动回退官方源。
+          sudo sed -i 's|http://archive.ubuntu.com|https://azure.archive.ubuntu.com|g; s|http://security.ubuntu.com|https://azure.archive.ubuntu.com|g' \
+            /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             ack antlr3 asciidoc autoconf automake autopoint binutils bison \
@@ -295,31 +283,19 @@ jobs:
 
       - name: Validate inputs
         run: |
-          case "$IWRT_PROFILE" in
-            master|25.12) ;;
-            *) echo "::error::非法 iwrt_profile: $IWRT_PROFILE (可选 master/25.12)"; exit 1 ;;
-          esac
           if [ -n "$IWRT_REF" ]; then
-            echo "iwrt_ref 显式指定, 优先于 iwrt_profile 默认基线: $IWRT_REF"
-          elif [ "$IWRT_PROFILE" = "25.12" ]; then
-            # ImmortalWrt 无 v25.12.3+ tag, 此 pin = openwrt-25.12 分支 HEAD
-            # (2026-10-24, 已并入上游 25.12.x(.6 世代) 修复)
-            IWRT_REF=84b665b5de
-          else
-            IWRT_REF=f44d1535b4
+            echo "iwrt_ref 显式指定: $IWRT_REF"
           fi
-          echo "IWRT_REF=$IWRT_REF" >> "$GITHUB_ENV"
-          # 构建开始即报解析结果, 防止配置档选错刷错固件 (r23 事故)
-          echo "::notice::构建配置档: $IWRT_PROFILE | 基线: $IWRT_REF (master=f44d1535b4/内核6.18, 25.12=84b665b5de/内核6.12)"
+          # 基线默认值解析已上移到 job 级 env（IWRT_REF 表达式），这里
+          # 不再重复 if/elif 赋值，只保留结果核对。CI 和本地脚本
+          # (build-local.sh resolve_inputs) 的默认基线必须保持一致。
+          echo "::notice::基线: $IWRT_REF (master 默认 f44d1535b4/内核6.18)"
           echo "$LAN_IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || { echo "::error::非法 LAN IP: $LAN_IP"; exit 1; }
           if [ "$PPPOE" = "true" ] && [ -z "$PPPOE_USERNAME" ]; then
             echo "::error::启用了 PPPoE 但未填写账号 (pppoe_username)"; exit 1
           fi
           if [ "$PPPOE" = "true" ] && [ -z "$PPPOE_PASSWORD" ] && [ -z "$PPPOE_SECRET" ]; then
             echo "::error::PPPoE 密码为空: 请填写 pppoe_password 或配置仓库 Secret PPPOE_PASSWORD"; exit 1
-          fi
-          if [ "$ENABLE_HONK" = "true" ] && [ "$BAKE_DAEDE" = "true" ]; then
-            echo "::error::enable_honk 与 bake_daede 互斥 (honk 与 dae/daed 同抢 eBPF TC 挂钩, 官方源包亦互斥)"; exit 1
           fi
           # 附加服务 (workflow_dispatch 最多 25 个输入, docker/mwan3 合并成一个选择项)
           case "$EXTRA_SERVICES" in
@@ -345,12 +321,56 @@ jobs:
             esac
           fi
 
+      # 基线 pin 成 commit 是有必要的（分支 HEAD 会漂，补丁随时套不上），
+      # 但 pin 的 SHA 一旦被上游 rebase / gc 回收，后面所有步骤都会在
+      # `git checkout` 处静默失败——日志里只有一行 "reference is not a tree"，
+      # 很容易被当成补丁问题排查半天。所以这里先做存在性校验，失败时把当前
+      # 可用的分支 HEAD 打出来，直接复制进 iwrt_ref 就能恢复。
+      # 另外记录实际解析出的 BASE_SHA 与提交时间，方便事后定位"哪一版源码
+      # 编出来的固件"——分支 HEAD 是会动的，光记 pin 字符串不够。
       - name: Clone ImmortalWrt source
         run: |
           git clone --filter=blob:none https://github.com/immortalwrt/immortalwrt
           cd immortalwrt
-          git checkout "$IWRT_REF"
-          git log -1 --format='base: %h %s'
+          git config advice.detachedHead false
+
+          # 用 cat-file -e 判定，不要用 rev-parse --verify：这是带
+          # --filter=blob:none 的 partial clone，对不存在的对象 rev-parse 会
+          # 先尝试 lazy-fetch，拿到 "not our ref" 之后仍可能吐出一个前缀匹配
+          # 到的近似 SHA 且退出码为 0，判断完全不可靠。
+          if ! git cat-file -e "${IWRT_REF}^{commit}" 2>/dev/null; then
+            echo "::error::基线 ${IWRT_REF} 在克隆到的仓库中不存在（上游已 rebase 或 gc 回收），拒绝继续构建"
+            echo "::error::请确认该 SHA 是否仍可见: gh api repos/immortalwrt/immortalwrt/commits/${IWRT_REF}"
+            echo "---- 当前可用基线（可直接填进 iwrt_ref）----"
+            git ls-remote origin 'refs/heads/master' 2>/dev/null | sed 's/^/  /'
+            echo "--------------------------------------------"
+            exit 1
+          fi
+
+          git checkout --detach "$IWRT_REF"
+          BASE_SHA=$(git rev-parse HEAD)
+          BASE_DATE=$(git log -1 --format='%cI')
+          BASE_SUBJ=$(git log -1 --format='%s')
+          echo "base: ${BASE_SHA} (${BASE_DATE}) ${BASE_SUBJ}"
+
+          # 对象存在 ≠ 基线长期可用。上游若 force-push / rebase，旧提交会变成
+          # 悬空对象：partial clone 恰好带出来就能编，但谁都看不到它，下次 gc
+          # 就没了。这种情况只警告、不中断（本次构建是有效的），但必须留痕。
+          if [ -z "$(git tag --points-at "$BASE_SHA")" ] \
+             && ! git merge-base --is-ancestor "$BASE_SHA" origin/master 2>/dev/null; then
+            echo "::warning::基线 ${BASE_SHA} 既不是 tag、也不在 master 的可达历史里：它是悬空对象，上游下次 gc 会回收，请尽快改成分支 HEAD 或 tag。"
+          fi
+
+          echo "BASE_SHA=${BASE_SHA}" >> "$GITHUB_ENV"
+          {
+            echo "### 构建基线"
+            echo ""
+            echo "| 项 | 值 |"
+            echo "| --- | --- |"
+            echo "| 请求的 ref | \`${IWRT_REF}\` |"
+            echo "| 实际提交 | \`${BASE_SHA}\` |"
+            echo "| 提交时间 | ${BASE_DATE} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # dl/ 里是上游源码 tarball，和本仓库的补丁/配置无关。
       # 原 key 里带 hashFiles('patches/*.patch')，导致改任何补丁都会让
@@ -394,22 +414,10 @@ jobs:
           #         + tagger 同步(控制帧解码 + mac_header 修复, 旧 tagger
           #           解不了 0004 的陷阱帧) + factory nvmem 单元 (0005,
           #           PR head 1713e8be63, 2026-11-05 四提交重构)
-          # 25.12 : patches-25.12/ = dmsza/openwrt "[25.12] add support for
-          #         GL.iNet GL-MT5000" (现为 af67b61, 审阅修复已并入; 为适配
-          #         ImmortalWrt 树已剔除仅涉及 jiorouter 设备的 hunk,
-          #         其终态在上游已存在)
-          #         + 795-11 VLAN 卸载拒绝 + 795-12 重制 (0002, dmsza 8fbeeb6
-          #         + b325c2b 上下文重制; 基线 84b665b5de 内核 6.12.112 的
-          #         mtk_probe 错误路径已被上游 stable 改过, 0001 的旧 hunk
-          #         形态套不上)。
-          #         各自只对已验证的基线保证干净套用。
-          case "$IWRT_PROFILE" in
-            25.12) PATCHDIR=../patches-25.12 ;;
-            *)     PATCHDIR=../patches ;;
-          esac
-          for p in "$PATCHDIR"/*.patch; do
+          # 补丁只对已验证的 master 基线保证干净套用。
+          for p in ../patches/*.patch; do
             echo "applying $p"
-            git apply --check "$p" && git apply "$p" || { echo "::error::$p 应用失败 (profile=$IWRT_PROFILE); 基线 $IWRT_REF 可能已变动, 请显式指定已知可用 iwrt_ref 或基于该 profile 重新生成补丁"; exit 1; }
+            git apply --check "$p" && git apply "$p" || { echo "::error::$p 应用失败; 基线 $IWRT_REF 可能已变动, 请显式指定已知可用 iwrt_ref 或基于 master 重新生成补丁"; exit 1; }
           done
 
       - name: Overlay files/ and feeds
@@ -435,9 +443,6 @@ jobs:
             echo 'src-git nas https://github.com/linkease/nas-packages;master' >> feeds.conf.default
             echo 'src-git nasluci https://github.com/linkease/nas-packages-luci;main' >> feeds.conf.default
           fi
-          if [ "$BAKE_DAEDE" = "true" ]; then
-            echo 'src-git daede https://github.com/kenzok8/openwrt-daede' >> feeds.conf.default
-          fi
           if [ -n "$EXTRA_FEEDS" ]; then
             printf '%s' "$EXTRA_FEEDS" | tr '|' '\n' | while IFS= read -r FEEDLINE; do
               FEEDLINE=$(printf '%s' "$FEEDLINE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -447,24 +452,6 @@ jobs:
             done
           fi
           ./scripts/feeds update -a
-          # 25.12 profile: the openwrt-25.12 luci feed still ships argon
-          # 2.4.7 (no settings UI; the standalone argon-config app does not
-          # exist on that branch either). Overlay luci master's theme (3.x,
-          # settings built into the theme) so both profiles get the same
-          # configurable theme.
-          # Only needed when the theme is actually selected (luci-apps seed);
-          # with the stock-bootstrap default this block is skipped.
-          if [ "$IWRT_PROFILE" = "25.12" ] && [ "$LUCI_EXTRA_APPS" = "true" ]; then
-            git -C feeds/luci fetch --depth 1 origin master
-            rm -rf feeds/luci/themes/luci-theme-argon
-            git -C feeds/luci checkout FETCH_HEAD -- themes/luci-theme-argon
-            ARGON_V=$(sed -n 's/^PKG_VERSION:=//p' feeds/luci/themes/luci-theme-argon/Makefile)
-            echo "25.12 argon overlay: luci master luci-theme-argon $ARGON_V"
-            case "$ARGON_V" in
-              [3-9].*) ;;
-              *) echo "::error::argon 覆盖后版本非 3.x: '$ARGON_V' (luci master 主题包路径/结构变动? 请核对)"; exit 1 ;;
-            esac
-          fi
           ./scripts/feeds install -a
           if [ "$ENABLE_STORE" = "true" ] || [ "$ENABLE_QUICKSTART" = "true" ]; then
             ./scripts/feeds install -d y -p istore luci-app-store
@@ -472,15 +459,6 @@ jobs:
           if [ "$ENABLE_QUICKSTART" = "true" ]; then
             ./scripts/feeds install -f -p nas quickstart
             ./scripts/feeds install -f -p nasluci luci-app-quickstart
-          fi
-          if [ "$BAKE_DAEDE" = "true" ]; then
-            # resolve name conflicts with packages feed, then force-install daede feed versions
-            rm -f package/feeds/packages/dae package/feeds/packages/daed
-            ./scripts/feeds install -f -p daede dae daed luci-app-daede
-            # extend daed reload timeout 75s -> 600s (1GB-RAM devices need longer)
-            sed -i 's/const reloadWaitTimeout = 75 \* time.Second/const reloadWaitTimeout = 600 * time.Second/' \
-              feeds/daede/daed/patches/0004-restart-daed-on-dashboard-reload-timeout.patch || \
-              echo "::warning::daed 0004 补丁结构已变动, 600s 超时修改未应用 (沿用默认 75s)"
           fi
           if [ -n "$EXTRA_FEEDS" ]; then
             # extra feeds take precedence over stock feeds on package-name conflicts
@@ -501,17 +479,13 @@ jobs:
           sed -i "s|^CONFIG_TARGET_PREINIT_IP=.*|CONFIG_TARGET_PREINIT_IP=\"$LAN_IP\"|" .config
           sed -i "s|^CONFIG_TARGET_PREINIT_BROADCAST=.*|CONFIG_TARGET_PREINIT_BROADCAST=\"$LAN_BC\"|" .config
 
-          if [ "$UI_LANG" = "en" ]; then
-            sed -i 's|^CONFIG_LUCI_LANG_zh_Hans=y|# CONFIG_LUCI_LANG_zh_Hans is not set|' .config
-          fi
-
-          if [ "$LUCI_FLAVOR" = "light" ]; then
-            printf 'CONFIG_PACKAGE_luci-light=y\n# CONFIG_PACKAGE_luci is not set\n' >> .config
-          else
-            # full 套件必须显式选中: uhttpd / luci-mod-* / bootstrap 主题只由
-            # luci 合集拉起, 缺了它固件里只有 luci-base + apps, 没有Web服务器
-            printf 'CONFIG_PACKAGE_luci=y\n' >> .config
-          fi
+          # 语言: default-settings-chn 依赖 @LUCI_LANG_zh_Hans + luci-i18n-base-zh-cn，
+          # 所以中文 i18n 包一定在固件里（zh_Hans 符号会被 defconfig 拉回，改不掉）。
+          # 「默认界面语言」由首启脚本 99-luci-lang 决定：写 luci.main.lang=zh_cn
+          # 就是中文；不写则 LuCI 走 auto，按浏览器语言协商。
+          # LuCI 全套由 config/mt5000.seed 的 CONFIG_PACKAGE_luci=y 保证
+          # (master 的 include/target.mk 不追加 tweak 段, 必须显式选中,
+          #  否则 uhttpd / luci-mod-* / bootstrap 主题全都不会被拉起)
 
           if [ "$ENABLE_STORE" != "true" ]; then
             sed -i 's|^CONFIG_PACKAGE_luci-app-store=y|# CONFIG_PACKAGE_luci-app-store is not set|' .config
@@ -521,10 +495,6 @@ jobs:
             # quickstart 首页/向导 (iStoreOS 风格); 核心包 quickstart 与
             # luci-app-store 由 defconfig 依依赖链自动选中
             printf 'CONFIG_PACKAGE_luci-app-quickstart=y\n' >> .config
-          fi
-
-          if [ "$BAKE_DAEDE" = "true" ]; then
-            printf 'CONFIG_PACKAGE_luci-app-daede=y\nCONFIG_PACKAGE_luci-app-daede_daed=y\nCONFIG_PACKAGE_daed=y\n' >> .config
           fi
 
           if [ "$INCLUDE_DOCKER" = "true" ]; then
@@ -553,25 +523,6 @@ jobs:
               'CONFIG_PACKAGE_luci-app-mwan3=y' >> .config
           fi
 
-          # honk (enable_honk): 运行时依赖预编入。首启安装走 daeuniverse 官方
-          # apk 源, 但本固件基于 ImmortalWrt snapshot, 自带 apk 源会被首启清理
-          # (404), 故 libstdcpp/kmod-*/v2ray-geo* 必须已在固件里; geo 数据一并
-          # 编入省去首启下载。vmlinux-btf-builtin (空包) 由官方源提供, 无需编入。
-          if [ "$ENABLE_HONK" = "true" ]; then
-            printf '%s\n' \
-              'CONFIG_PACKAGE_libstdcpp=y' \
-              'CONFIG_PACKAGE_kmod-nft-core=y' \
-              'CONFIG_PACKAGE_kmod-nfnetlink-queue=y' \
-              'CONFIG_PACKAGE_kmod-nf-conntrack=y' \
-              'CONFIG_PACKAGE_v2ray-geoip=y' \
-              'CONFIG_PACKAGE_v2ray-geosite=y' >> .config
-          fi
-
-          if [ "$LUCI_EXTRA_APPS" != "false" ] && [ "$LUCI_EXTRA_APPS" != "" ]; then
-            # curated LuCI app list (all stock-feed packages)
-            cat ../config/luci-extra.seed >> .config
-          fi
-
           if [ -n "$EXTRA_PACKAGES" ]; then
             for PKG in $EXTRA_PACKAGES; do
               case "$PKG" in '#'*) continue ;; esac
@@ -583,52 +534,32 @@ jobs:
 
           echo "=== sanity check ==="
           grep -qE 'TARGET_mediatek_filogic_DEVICE_glinet_gl-mt5000=y' .config || { echo "::error::设备目标缺失"; exit 1; }
-          grep -qE 'CONFIG_KERNEL_DEBUG_INFO_BTF=y' .config            || { echo "::error::内核 BTF 缺失"; exit 1; }
           if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
             grep -qE 'CONFIG_PACKAGE_luci-app-run=y' .config || { echo "::error::luci-app-run 缺失 (wkd feed 安装失败?)"; exit 1; }
           fi
-          # USB 网络(网卡/4G/5G 转接板/手机共享)关键符号抽查
-          for U in kmod-usb3 kmod-usb-net-qmi-wwan kmod-usb-net-cdc-mbim kmod-usb-net-cdc-ncm kmod-usb-net-rndis kmod-usb-net-ipheth kmod-usb-net-rtl8152; do
-            grep -qE "^CONFIG_PACKAGE_${U}=y" .config || { echo "::error::USB 网络组件缺失: $U (包名变动? 请核对 config/mt5000.seed)"; exit 1; }
-          done
           if [ "$ENABLE_MWAN3" = "true" ]; then
             for U in mwan3 luci-app-mwan3; do
               grep -qE "^CONFIG_PACKAGE_${U}=y" .config || { echo "::error::多线管理组件缺失: $U (extra_services 含 mwan3 但未编入?)"; exit 1; }
             done
           fi
-          grep -qE '^CONFIG_PACKAGE_(luci|luci-light)=y' .config      || { echo "::error::LuCI 套件未生效 (luci_flavor)"; exit 1; }
+          grep -qE '^CONFIG_PACKAGE_(luci|luci-light)=y' .config      || { echo "::error::LuCI 套件未生效 (config/mt5000.seed 的 CONFIG_PACKAGE_luci=y)"; exit 1; }
           grep -qE '^CONFIG_PACKAGE_uhttpd=y' .config                 || { echo "::error::uhttpd 缺失: LuCI 无 Web 服务器, 管理页面将无法访问"; exit 1; }
+          # 25.12 filogic 默认包集对齐项 (master 的 target.mk 不追加 tweak 段,
+          # 全靠 config/mt5000.seed 显式写出; 少一个就与 25.12 默认行为不一致)
+          for U in block-mount default-settings-chn kmod-nf-nathelper; do
+            grep -qE "^CONFIG_PACKAGE_${U}=y" .config || { echo "::error::25.12 默认包集对齐项缺失: $U (config/mt5000.seed 被误删?)"; exit 1; }
+          done
           grep -q "CONFIG_TARGET_PREINIT_IP=\"$LAN_IP\"" .config       || { echo "::error::LAN IP 未生效"; exit 1; }
           grep -qE "CONFIG_TARGET_ROOTFS_PARTSIZE=$ROOTFS_SIZE" .config || { echo "::error::分区大小未生效"; exit 1; }
+          # 内核调试能力 (pr_debug/dev_dbg 运行时开关, 依赖 debugfs)
+          grep -qE '^CONFIG_KERNEL_DYNAMIC_DEBUG=y' .config            || { echo "::error::CONFIG_KERNEL_DYNAMIC_DEBUG 未生效 (config/mt5000.seed 被改动?)"; exit 1; }
+          grep -qE '^CONFIG_KERNEL_DEBUG_FS=y' .config                 || { echo "::error::debugfs 未开启, dynamic debug 无法在运行时控制"; exit 1; }
           if [ "$ENABLE_STORE" = "true" ]; then
             grep -qE 'CONFIG_PACKAGE_luci-app-store=y' .config || { echo "::error::iStore 缺失"; exit 1; }
           fi
           if [ "$ENABLE_QUICKSTART" = "true" ]; then
             grep -qE 'CONFIG_PACKAGE_luci-app-quickstart=y' .config || { echo "::error::luci-app-quickstart 缺失 (nasluci feed 安装失败?)"; exit 1; }
             grep -qE 'CONFIG_PACKAGE_quickstart=y' .config || { echo "::error::quickstart 核心包缺失 (依赖或架构 aarch64 不满足?)"; exit 1; }
-          fi
-          if [ "$BAKE_DAEDE" = "true" ]; then
-            grep -qE 'CONFIG_PACKAGE_daed=y' .config || { echo "::error::daed 缺失"; exit 1; }
-          fi
-          if [ "$ENABLE_HONK" = "true" ]; then
-            # honk 运行时依赖抽查 + 官方包互斥项 (dae/daed 与 honk 不能共存)
-            for U in libstdcpp kmod-veth kmod-sched-core kmod-sched-bpf kmod-nft-core kmod-nft-queue kmod-nfnetlink-queue kmod-nf-conntrack v2ray-geoip v2ray-geosite ca-bundle; do
-              grep -qE "^CONFIG_PACKAGE_${U}=y" .config || { echo "::error::honk 运行依赖缺失: $U (包名变动? 请核对 config/mt5000.seed 或 enable_honk 依赖块)"; exit 1; }
-            done
-            if grep -qE '^CONFIG_PACKAGE_(dae|daed)=y' .config; then
-              echo "::error::dae/daed 与 honk 不能共存 (官方源互斥, eBPF TC 挂钩冲突)"; exit 1
-            fi
-          fi
-          if [ "$LUCI_EXTRA_APPS" != "false" ] && [ "$LUCI_EXTRA_APPS" != "" ]; then
-            MISSING_LUCI=""
-            for OPT in $(grep -oE '^CONFIG_PACKAGE_[A-Za-z0-9_.-]+=y' ../config/luci-extra.seed | sed 's/^CONFIG_PACKAGE_//;s/=y$//'); do
-              grep -q "^CONFIG_PACKAGE_${OPT}=y" .config || MISSING_LUCI="$MISSING_LUCI $OPT"
-            done
-            if [ -n "$MISSING_LUCI" ]; then
-              echo "::error::luci-extra 清单中以下条目未生效(基础包名错误或依赖不满足, 请核对 config/luci-extra.seed):$MISSING_LUCI"
-              exit 1
-            fi
-            echo "luci-extra apps: $(grep -cE '^CONFIG_PACKAGE_luci-(app|theme)[A-Za-z0-9_.-]*=y' ../config/luci-extra.seed) entries OK"
           fi
           if [ -n "$EXTRA_PACKAGES" ]; then
             MISSING=""
@@ -855,40 +786,26 @@ jobs:
           chmod 755 "$UD"/99-*
           ls -la "$UD"/
 
-      - name: Generate honk auto-install (optional)
+      - name: Record build metadata
         run: |
-          cd immortalwrt
-          if [ "$ENABLE_HONK" != "true" ]; then
-            echo "enable_honk 未启用, 跳过"
-            exit 0
-          fi
-          # honk 经 daeuniverse 官方 apk 源安装 (https://openwrt.daeuniverse.org,
-          # honk 包内置 doona 面板, 取代旧 bake_doona 手搭的 Zakkaus overlay)。
-          # 生成三件套: 预置默认配置 + WAN 联网自动安装 + /etc/honk 备份;
-          # 二进制来自官方源, 后续升级走 apk / LuCI。
-          mkdir -p files/usr/bin files/etc/honk files/etc/hotplug.d/iface files/etc/uci-defaults
-          install -m 0755 ../config/honk/honk-install files/usr/bin/honk-install
-          install -m 0755 ../config/honk/99-honk-install.hotplug files/etc/hotplug.d/iface/99-honk-install
-          # 默认配置 = qichiyuhub config.min.dae (vendored, lan_interface 已按
-          # 其文件内说明改为 br-lan); 属 honk 包 conffile, 升级不会被包默认覆盖
-          cp ../config/honk/config.min.dae files/etc/honk/config.dae
-          grep -q "lan_interface: br-lan" files/etc/honk/config.dae || {
-            echo "::error::honk 配置模板 lan_interface 不再是 br-lan (config/honk/config.min.dae 被改动?)"; exit 1; }
-          # /etc/honk (配置+面板数据) 加入 sysupgrade 备份 (幂等; 官方包自身的
-          # keep.d 只保留 /etc/honk/data/)
-          cat > files/etc/uci-defaults/99-honk-sysupgrade <<'EOF'
-          #!/bin/sh
-          grep -q '^/etc/honk/' /etc/sysupgrade.conf 2>/dev/null || \
-              printf '%s\n' '/etc/honk/' >> /etc/sysupgrade.conf
-          exit 0
-          EOF
-          chmod 755 files/etc/uci-defaults/99-honk-sysupgrade
-          echo "honk 自动安装三件套已生成 (config: qichiyuhub config.min, lan=br-lan)"
+          {
+            echo '## 构建元信息'
+            echo
+            echo '| 项 | 值 |'
+            echo '|---|---|'
+            echo "| iwrt_ref | $IWRT_REF |"
+            echo "| rootfs_size | $ROOTFS_SIZE |"
+            echo "| store_mode | $EXTRA_SERVICES |"
+            echo "| enable_ipv6 | $ENABLE_IPV6 |"
+            echo "| pppoe | $PPPOE |"
+            echo "| build_jobs | ${BUILD_JOBS:-5} |"
+            echo "| runner | $RUNNER_NAME ($RUNNER_ARCH) |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download sources
         run: |
           cd immortalwrt
-          make download -j"$(nproc)"
+          make download -j"${BUILD_JOBS:-5}"
 
       - name: Build firmware
         env:
@@ -906,10 +823,9 @@ jobs:
           echo "=== ccache before ==="
           ccache -s 2>/dev/null || echo "(ccache 尚未初始化)"
 
-          # nproc+1：构建里有不少 I/O 等待，多一个进程能把 CPU 空档填满。
+          JOBS="${BUILD_JOBS:-5}"
           # 并行失败时改用 -j1 V=s 重跑，配合 ccache 已编译的目标会直接命中，
           # 比从前从零串行重来便宜得多。
-          JOBS=$(( $(nproc) + 1 ))
           echo "building with -j$JOBS"
           make -j"$JOBS" || {
             echo "::group::verbose retry log (make -j1 V=s)"
@@ -932,14 +848,10 @@ jobs:
           SYS=$(ls "$IMGDIR" 2>/dev/null | grep 'glinet_gl-mt5000-squashfs-sysupgrade.bin$' | head -n1)
           [ -n "$SYS" ] || SYS="(见附件)"
           [ "$ENABLE_STORE" = "true" ]  && STORE_OPT='已集成'  || STORE_OPT='未集成'
-          [ "$BAKE_DAEDE" = "true" ]   && DAEDE_OPT='编入固件(600s 超时补丁)' || DAEDE_OPT='运行时安装(默认)'
-          if [ "$ENABLE_HONK" = "true" ]; then HONK_OPT='首启自动安装 (daeuniverse 官方源, 内置 doona 面板)'; else HONK_OPT='未集成'; fi
           [ "$INCLUDE_DOCKER" = "true" ] && DOCKER_OPT='已集成' || DOCKER_OPT='未集成'
           if [ "$ENABLE_MWAN3" = "true" ]; then MWAN3_OPT='已集成 (仅接管 IPv4; 已打 IPv6 防打标修复)'; else MWAN3_OPT='未集成'; fi
-          if [ "$LUCI_EXTRA_APPS" != "false" ] && [ "$LUCI_EXTRA_APPS" != "" ]; then LUCI_EXTRA_OPT='已集成(argon 主题/diskman/openclash/rclone/ttyd/upnp; passwall 已注释停用)'; else LUCI_EXTRA_OPT='未集成'; fi
           if [ "$ENABLE_QUICKSTART" = "true" ]; then QS_OPT='已集成 (iStoreOS 风格首页/向导)'; else QS_OPT='未集成'; fi
           if [ "$PPPOE" = "true" ]; then PPPOE_OPT="已预置 (账号密码不显示)"; else PPPOE_OPT='未预置 (DHCP)'; fi
-          if [ "$LUCI_FLAVOR" = "light" ]; then LUCI_OPT='luci-light (精简)'; else LUCI_OPT='luci (完整)'; fi
           if [ "$ENABLE_IPV6" = "true" ]; then
             if [ "$LAN_IPV6_DNS" = "true" ]; then IPV6_DNS_OPT='通告 IPv6 DNS'; else IPV6_DNS_OPT='不通告 IPv6 DNS(DNS 走 IPv4)'; fi
             IPV6_OPT="已启用 (WAN 委托前缀 + LAN RA/SLAAC, ip6assign=$LAN_IPV6_ASSIGN, 后缀 $LAN_IPV6_SUFFIX, DHCPv6 $LAN_IPV6_DHCPV6, $IPV6_DNS_OPT)"
@@ -960,17 +872,14 @@ jobs:
             echo "| | |"
             echo "|---|---|"
             echo "| 构建编号 | r${{ github.run_number }} |"
-            echo "| 基础版本 | \`$IWRT_REF\` (配置档 $IWRT_PROFILE) |"
+            echo "| 基础版本 | \`$IWRT_REF\` → \`${BASE_SHA:0:10}\` |"
             echo "| 构建时间 | $DATE |"
             echo "| 默认 LAN IP | \`$LAN_IP\` |"
             echo "| 时区 / 语言 | $TIMEZONE / $UI_LANG |"
             echo "| 软件包分区 | ${ROOTFS_SIZE} MB |"
-            echo "| LuCI 套件 | $LUCI_OPT |"
-            echo "| LuCI 应用清单 | $LUCI_EXTRA_OPT |"
+            echo "| LuCI 套件 | \`luci\` 全套 (含 uhttpd) |"
             echo "| quickstart 首页 | $QS_OPT |"
             echo "| iStore | $STORE_OPT |"
-            echo "| daede 代理 | $DAEDE_OPT |"
-            echo "| honk 代理 | $HONK_OPT |"
             echo "| Docker | $DOCKER_OPT |"
             echo "| mwan3 多线 | $MWAN3_OPT |"
             echo "| PPPoE | $PPPOE_OPT |"
@@ -982,18 +891,16 @@ jobs:
             echo ""
             echo "- MT5000 设备支持(上游 PR [openwrt#24237](https://github.com/openwrt/openwrt/pull/24237) 移植 + 审阅反馈修复)"
             echo "- 已在本项目固件之间升级时 sysupgrade 可保留配置(eMMC + platform_copy_config)"
-            echo "- LuCI 应用精选清单(见 config/luci-extra.seed)"
-            echo "- 内核 BTF + XDP_SOCKETS(eBPF CO-RE 前置,daede 可用)"
-            echo "- daede 运行前置依赖:kmod 五件套 + v2ray geo 数据 + ca-bundle"
+            echo "- LuCI 全套(luci 合集: uhttpd + mod-admin-full/network/status/system + bootstrap 主题 + 软件包管理)"
+            echo "- 25.12 filogic 默认包集对齐:block-mount/default-settings-chn/kmod-nf-nathelper/luci"
+            echo "- 基础增强:bash/curl/ip-full"
             echo "- autocore 状态页(CPU 型号/频率/温度)"
             if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
               echo "- luci-app-run 网页上传/运行安装器(支持 .run/.sh/.ipk/.apk)"
             fi
-            echo "- USB 口网络全家桶:USB 网卡(RTL815x/AX88179/ASIX/LAN78xx)、4G/5G 转接板(QMI/MBIM/NCM+串口)、手机 USB 共享(安卓 RNDIS/NCM、iPhone)"
             if [ "$ENABLE_MWAN3" = "true" ]; then
               echo "- mwan3 多线管理(有线/随身WiFi/手机共享 优先级与故障转移, LuCI「网络→Multi WAN」; 已限定只接管 IPv4, 不会影响 IPv6)"
             fi
-            echo "- 随身WiFi/USB网卡即插即用: 插入自动建接口+挂防火墙(metric=50 默认备份线, 零点击)"
             echo "- 首启自动清理会 404 的 apk 软件源"
             echo ""
             echo "### 刷机方法"
@@ -1006,21 +913,6 @@ jobs:
             echo "3. 已在 ImmortalWrt:系统「备份/升级」页上传,可保留配置"
             echo "4. 刷机后访问 http://$LAN_IP ($LOGIN_NOTE)"
             echo ""
-            if [ "$ENABLE_HONK" = "true" ]; then
-              echo "### honk 代理(首启自动安装)"
-              echo ""
-              echo "- WAN 首次联网后自动从 daeuniverse 官方源安装 honk (内置 doona 面板), 运行依赖已编入固件"
-              echo "- 面板: http://$LAN_IP:9090/ui/ 首次打开创建管理员; 默认配置为 qichiyuhub config.min 分流模板, 订阅在面板里改"
-              echo "- 与 dae/daed 不能共存 (eBPF TC 冲突); 若首启时未联网, 联网后 SSH 执行 honk-install 即可"
-              echo "- 配置与面板数据在 /etc/honk (已加入 sysupgrade 备份)"
-            else
-              echo "### daede 代理安装(未编入固件时)"
-              echo ""
-              echo '   ```'
-              echo '   wget -O - https://raw.githubusercontent.com/kenzok8/openwrt-daede/refs/heads/main/scripts/install.sh | ash'
-              echo '   ```'
-            fi
-            echo ""
             echo "> 完整校验值见附件 sha256sums;软件清单见 *.manifest;构建配置见 config.buildinfo"
           } > release_notes.md
 
@@ -1030,7 +922,7 @@ jobs:
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: immortalwrt-mt5000-${{ env.IWRT_PROFILE }}-r${{ github.run_number }}-${{ env.IWRT_REF }}
+          name: immortalwrt-mt5000-master-r${{ github.run_number }}-${{ env.IWRT_REF }}
           path: |
             immortalwrt/bin/targets/mediatek/filogic/*glinet_gl-mt5000*
             immortalwrt/bin/targets/mediatek/filogic/sha256sums
@@ -1044,7 +936,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: mt5000-r${{ github.run_number }}
-          name: MT5000 固件 (${{ env.IWRT_PROFILE }}) r${{ github.run_number }} (base ${{ env.IWRT_REF }})
+          name: MT5000 固件 (master) r${{ github.run_number }} (base ${{ env.IWRT_REF }})
           body_path: release_notes.md
           # 不加 *.manifest: 会被 *glinet_gl-mt5000* 重复匹配, 同一文件并发上传
           # 两次会撞 action-gh-release 同名资产竞态 (r25 的 release 因此卡死在 draft)

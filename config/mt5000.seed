@@ -14,77 +14,34 @@ CONFIG_TARGET_PREINIT_IP="10.0.0.1"
 CONFIG_TARGET_PREINIT_NETMASK="255.255.255.0"
 CONFIG_TARGET_PREINIT_BROADCAST="10.0.0.255"
 
-# Kernel prerequisites for dae/dade eBPF (CO-RE) transparent proxy
-# BTF needs full debug info (REDUCED must be off)
-CONFIG_KERNEL_DEBUG_INFO_BTF=y
-# CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set
-CONFIG_KERNEL_XDP_SOCKETS=y
+# ============================================================================
+# 25.12 filogic 默认包集补齐（关键区段，勿删）
+# ----------------------------------------------------------------------------
+# master 的 include/target.mk 把「追加 tweak 默认包集」那行注释掉了：
+#     # DEFAULT_PACKAGES += $(DEFAULT_PACKAGES.tweak)
+# 而 25.12 是启用的：
+#     DEFAULT_PACKAGES += $(DEFAULT_PACKAGES.tweak)
+# 25.12 的 tweak 内容为：
+#     block-mount  default-settings-chn  kmod-nf-nathelper  luci
+# 所以 master 基线编出来的固件会完全没有 LuCI，刷完只能 ssh，无法 web 管理。
+# 下面四项即是对 25.12 tweak 段的手工等价补齐。
+# ============================================================================
+CONFIG_PACKAGE_luci=y
+CONFIG_PACKAGE_block-mount=y
+CONFIG_PACKAGE_default-settings-chn=y
+CONFIG_PACKAGE_kmod-nf-nathelper=y
 
-# Runtime deps baked into firmware
-# (self-built kernel kmods are NOT available from any online repo, so all
-#  kmods required by daede/dae must be built into the image; the dae/daed
-#  userland binaries are installed later via kenzok8/openwrt-daede script)
-CONFIG_PACKAGE_ca-bundle=y
-CONFIG_PACKAGE_v2ray-geoip=y
-CONFIG_PACKAGE_v2ray-geosite=y
-CONFIG_PACKAGE_kmod-sched-core=y
-CONFIG_PACKAGE_kmod-sched-bpf=y
-CONFIG_PACKAGE_kmod-veth=y
-CONFIG_PACKAGE_kmod-xdp-sockets-diag=y
-CONFIG_PACKAGE_kmod-nft-tproxy=y
-# honk (doona) UDP NFQUEUE staging (queue 320); harmless otherwise
-CONFIG_PACKAGE_kmod-nft-queue=y
+# --- 基础增强（官方默认集之外的少量工具）---
+CONFIG_PACKAGE_bash=y
+CONFIG_PACKAGE_curl=y
+CONFIG_PACKAGE_ip-full=y
 
-# --- USB networking on the USB-A port ---
-# host stack (ssusb/tphy are enabled in the DTS; drivers must be installed
-# or the port stays dead)
-CONFIG_PACKAGE_kmod-usb3=y
-# wired USB LAN adapters (RTL8152/8153, AX88179/178A, ASIX, CDC-Ether, LAN78xx)
-CONFIG_PACKAGE_kmod-usb-net=y
-CONFIG_PACKAGE_kmod-usb-net-cdc-ether=y
-CONFIG_PACKAGE_kmod-usb-net-rtl8152=y
-CONFIG_PACKAGE_kmod-usb-net-asix=y
-CONFIG_PACKAGE_kmod-usb-net-asix-ax88179=y
-CONFIG_PACKAGE_kmod-usb-net-lan78xx=y
-# 4G/5G modem adapter boards (mPCIe/M.2 -> USB): QMI / MBIM / NCM + serial
-# ports (kmod-usb-wdm is pulled in as a dependency of qmi/mbim)
-CONFIG_PACKAGE_kmod-usb-net-qmi-wwan=y
-CONFIG_PACKAGE_uqmi=y
-CONFIG_PACKAGE_kmod-usb-net-cdc-mbim=y
-CONFIG_PACKAGE_umbim=y
-CONFIG_PACKAGE_kmod-usb-net-cdc-ncm=y
-CONFIG_PACKAGE_kmod-usb-net-huawei-cdc-ncm=y
-CONFIG_PACKAGE_kmod-usb-serial=y
-CONFIG_PACKAGE_kmod-usb-serial-option=y
-# phone USB tethering: Android (RNDIS legacy / NCM new), iPhone (ipheth)
-CONFIG_PACKAGE_kmod-usb-net-rndis=y
-CONFIG_PACKAGE_kmod-usb-net-ipheth=y
-
-# --- multi-WAN management (wired + 4G/5G stick + phone tethering) ---
-# mwan3 is opt-in now: the workflow input `enable_mwan3` (default off) adds
-# CONFIG_PACKAGE_mwan3/luci-app-mwan3 and emits the first-boot fix-up script
-# `99-mwan3-ipv4`. Reason: mwan3's stock config carries `default_rule_v6`
-# pointing at the `balanced` policy, which has no IPv6 member in a plain
-# PPPoE/DHCP-WAN setup, so mwan3 marks every IPv6 packet "unreachable"
-# (ip -6 rule fwmark 0x3e00/0x3f00 unreachable) and IPv6 breaks for both the
-# router itself and all downstream clients (address yes, internet no).
-# (usb-modeswitch no longer exists in any OpenWrt feed; modern sticks
-# enumerate directly as RNDIS/ECM/QMI/MBIM)
-
-# LuCI simplified Chinese UI (default language set by files/etc/uci-defaults)
-CONFIG_LUCI_LANG_zh_Hans=y
-
-# Status page: CPU model / freq / temperature (ImmortalWrt specific)
+# autocore: 状态页显示 CPU 型号 / 频率 / 温度（ImmortalWrt 特有）
 CONFIG_PACKAGE_autocore=y
 
-# Web upload/run installer (wukongdaily feed). OFF by default: it is a
-# third-party source and this build targets a stock-feed-only package set.
-# Enable via the workflow input `enable_luci_app_run`.
-# CONFIG_PACKAGE_luci-app-run is not set
-
-# iStore app store (linkease/istore feed). OFF by default for the same reason.
-# Enable via the workflow input `enable_store`.
-# CONFIG_PACKAGE_luci-app-store is not set
+# LuCI 简体中文界面（default-settings-chn 依赖此符号，中文 i18n 必装；
+# 默认界面语言由首启脚本 99-luci-lang 写 luci.main.lang=zh_cn）
+CONFIG_LUCI_LANG_zh_Hans=y
 
 # --- GL-MT5000 hardware is wired-only (no Wi-Fi radio) ---
 # The stock target pulls in wpad + hostapd + wpa_supplicant, which all fail
@@ -103,6 +60,22 @@ CONFIG_PACKAGE_autocore=y
 # traversal is actually needed.
 # CONFIG_PACKAGE_miniupnpd is not set
 # CONFIG_PACKAGE_luci-app-upnp is not set
+
+# --- 内核调试：dynamic debug -------------------------------------------
+# 把 pr_debug() / dev_dbg() 编进内核，运行时可按「源文件 / 函数 / 行号 /
+# 模块」动态开关（/sys/kernel/debug/dynamic_debug/control），无需重编内核。
+# 代价：内核 text 约 +2%（几 MB 以内），运行时无额外开销（默认全关）。
+#
+# 用法：
+#   已挂载 debugfs（/etc/init.d/boot 会自动挂 /sys/kernel/debug）
+#   echo 'file mtk_eth_soc.c +p' > /sys/kernel/debug/dynamic_debug/control
+#   dmesg -w | grep -i mtk
+#   全部关掉：echo 'file * -p' > .../control
+#
+# 正式版想去掉这段调试能力时，删掉这行即可（不影响其他功能）。
+CONFIG_KERNEL_DYNAMIC_DEBUG=y
+# DYNAMIC_DEBUG 依赖 debugfs；OpenWrt 默认已开（default y），显式写出防止被改
+CONFIG_KERNEL_DEBUG_FS=y
 
 # --- Build-time: ccache ------------------------------------------------
 # 让编译器把 C/C++ 目标文件缓存到 .ccache，配合 workflow 里对
