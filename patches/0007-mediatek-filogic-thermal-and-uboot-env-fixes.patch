@@ -1,0 +1,83 @@
+From: rufus159 <rufus159@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 20:00:00 +0800
+Subject: [PATCH] mediatek: filogic: restore thermal protection, drop empty u-boot-env layout
+
+Three fixes for GL-MT5000, all verified against the running device.
+
+1) CONFIG_CPU_FREQ_THERMAL + CONFIG_CPU_IDLE
+
+filogic already sets CONFIG_CPU_THERMAL=y and the DTS carries a full
+cooling-maps block (cpu-passive plus three cpu-active maps bound to all
+four cores, trips at 85/115/117/120/125 C), but the generic config
+leaves CONFIG_CPU_FREQ_THERMAL unset. Without it cpufreq never registers
+a cooling device, so:
+
+  /sys/class/thermal/cooling_device*      -> empty
+  thermal_zone_bind_cooling_device        -> not in kallsyms
+  cpufreq_cooling_register                -> not in kallsyms
+
+and the box happily sits at 92 C at full load (measured, 4x busy loop)
+without ever throttling. Turning the option on makes the existing
+cooling-maps actually do something.
+
+CONFIG_CPU_IDLE is also off, which is why there is no
+/sys/devices/system/cpu/cpu0/cpuidle directory at all. Enable it plus the
+menu and teo governors so idle states can be used once the DTS describes
+them.
+
+Note on what this does NOT fix: idle temperature is 77-78 C and stays
+there even with all four cores locked to 500 MHz for 40 s, so the bulk of
+the heat is the RTL8366UB switch and the three 2.5G PHYs, not the CPU.
+Thermal protection is a safety net, not a temperature reduction.
+
+2) CONFIG_NVMEM_LAYOUT_U_BOOT_ENV off
+
+The DTS declares a u-boot-env partition with nvmem-layout
+compatible = "u-boot,env". That partition is all zeroes on this board
+(the vendor firmware never wrote it), so the layout driver rejects it:
+
+  u-boot-env-layout ...: Invalid calculated CRC32: 0xc09e9b4c (expected: 0x00000000)
+  probe with driver u-boot-env-layout failed with error -22
+
+Nothing depends on it (no uboot-envtools in the image, fw_printenv is
+absent), so the layout driver is pure noise here. Turning it off removes
+the two dmesg error lines. This is the kernel option rather than dropping
+the DTS node so other filogic boards that do carry a real env keep theirs.
+
+Signed-off-by: rufus159 <rufus159@users.noreply.github.com>
+---
+
+diff --git a/target/linux/generic/config-6.18 b/target/linux/generic/config-6.18
+--- a/target/linux/generic/config-6.18
++++ b/target/linux/generic/config-6.18
+@@ -1107,14 +1107,14 @@
+ # CONFIG_CPU_FREQ_DEFAULT_GOV_SCHEDUTIL is not set
+ # CONFIG_CPU_FREQ_DEFAULT_GOV_USERSPACE is not set
+ # CONFIG_CPU_FREQ_GOV_SCHEDUTIL is not set
+-# CONFIG_CPU_FREQ_THERMAL is not set
++CONFIG_CPU_FREQ_THERMAL=y
+ # CONFIG_CPU_HOTPLUG_STATE_CONTROL is not set
+ # CONFIG_CPU_ICACHE_DISABLE is not set
+ # CONFIG_CPU_ICACHE_MISMATCH_WORKAROUND is not set
+-# CONFIG_CPU_IDLE is not set
++CONFIG_CPU_IDLE=y
+ # CONFIG_CPU_IDLE_GOV_LADDER is not set
+-# CONFIG_CPU_IDLE_GOV_MENU is not set
+-# CONFIG_CPU_IDLE_GOV_TEO is not set
++CONFIG_CPU_IDLE_GOV_MENU=y
++CONFIG_CPU_IDLE_GOV_TEO=y
+ # CONFIG_CPU_IDLE_MULTIPLE_DRIVERS is not set
+ # CONFIG_CPU_ISOLATION is not set
+ # CONFIG_CPU_LITTLE_ENDIAN is not set
+diff --git a/target/linux/mediatek/filogic/config-6.18 b/target/linux/mediatek/filogic/config-6.18
+--- a/target/linux/mediatek/filogic/config-6.18
++++ b/target/linux/mediatek/filogic/config-6.18
+@@ -338,7 +338,7 @@
+ CONFIG_NVMEM_LAYOUTS=y
+ CONFIG_NVMEM_LAYOUT_ADTRAN=y
+ CONFIG_NVMEM_LAYOUT_ASCII_ENV=y
+-CONFIG_NVMEM_LAYOUT_U_BOOT_ENV=y
++# CONFIG_NVMEM_LAYOUT_U_BOOT_ENV is not set
+ CONFIG_NVMEM_MTK_EFUSE=y
+ CONFIG_NVMEM_SYSFS=y
+ CONFIG_OF=y
