@@ -60,11 +60,15 @@ on:
         options:
           - full
           - light
-      enable_store:
-        description: '集成 iStore 软件商店（引入 linkease/istore 第三方源）'
+      store_mode:
+        description: 'iStore 相关（none=都不装(默认,纯官方源); store=只装 iStore; quickstart=iStore+quickstart 首页）'
         required: false
-        default: false
-        type: boolean
+        default: 'none'
+        type: choice
+        options:
+          - 'none'
+          - 'store'
+          - 'quickstart'
       enable_luci_app_run:
         description: '集成 luci-app-run 网页安装器（引入 wukongdaily 第三方源）'
         required: false
@@ -167,11 +171,6 @@ on:
         required: false
         default: true
         type: boolean
-      enable_quickstart:
-        description: '集成 luci-app-quickstart (iStoreOS 风格首页/向导; 自动带入 nas/nas-luci 源, 依赖 iStore 与磁盘工具链, 约增加十几 MB)'
-        required: false
-        default: false
-        type: boolean
 
 # 同一 ref 只保留一个构建。历史上 5 次 cancelled 都是重复点 Run workflow
 # 后旧任务被人工取消，白白烧掉 300+ 分钟 runner 时间。开了这个以后新任务
@@ -196,7 +195,13 @@ jobs:
       UI_LANG: ${{ github.event.inputs.ui_lang || 'zh-cn' }}
       ROOTFS_SIZE: ${{ github.event.inputs.rootfs_size || '2048' }}
       LUCI_FLAVOR: ${{ github.event.inputs.luci_flavor || 'full' }}
-      ENABLE_STORE: ${{ github.event.inputs.enable_store || 'false' }}
+      # store_mode 是三态 choice（none/store/quickstart），在这里派生成原来
+      # 两个独立 boolean，下游所有 ENABLE_STORE / ENABLE_QUICKSTART 判断不变。
+      # 原因：GitHub 对 workflow_dispatch 的 inputs 有 25 个上限，原作者写到了
+      # 26 个，导致手动触发直接被 API 拒绝（HTTP 422 "you may only define up
+      # to 25 inputs"），历史上从没成功手动触发过一次。
+      ENABLE_STORE: ${{ (github.event.inputs.store_mode == 'store' || github.event.inputs.store_mode == 'quickstart') && 'true' || 'false' }}
+      ENABLE_QUICKSTART: ${{ github.event.inputs.store_mode == 'quickstart' && 'true' || 'false' }}
       ENABLE_LUCI_APP_RUN: ${{ github.event.inputs.enable_luci_app_run || 'false' }}
       BAKE_DAEDE: ${{ github.event.inputs.bake_daede }}
       ENABLE_HONK: ${{ github.event.inputs.enable_honk }}
@@ -213,7 +218,6 @@ jobs:
       HOSTNAME: ${{ github.event.inputs.hostname || 'ImmortalWrt' }}
       ROOT_PASSWORD: ${{ github.event.inputs.root_password }}
       LUCI_EXTRA_APPS: ${{ github.event.inputs.luci_extra_apps }}
-      ENABLE_QUICKSTART: ${{ github.event.inputs.enable_quickstart }}
       EXTRA_FEEDS: ${{ github.event.inputs.extra_feeds }}
       EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages }}
 
