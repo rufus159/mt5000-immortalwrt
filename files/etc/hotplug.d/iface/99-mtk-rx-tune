@@ -1,0 +1,27 @@
+#!/bin/sh
+# 网络接口事件后重新应用 RX 调优。
+#
+# 为什么需要这个: OpenWrt 自带的 packet_steering 服务注册了
+#   procd_add_raw_trigger "interface.*" 1000 /etc/init.d/packet_steering reload
+# 每个接口事件后 1 秒它都会重跑，把 rps_cpus 写回默认值(4)，并可能
+# 连带把 mtk_eth 的 napi 亲和性也带回 CPU0。本钩子延迟 5 秒执行，
+# 确保排在 packet_steering 之后，把调优覆盖回来。
+#
+# 只对真正影响数据路径的事件触发，避免无谓 fork。
+
+case "$ACTION" in
+	/*) ;;                      # 忽略 "add"/"remove" 之类的简写
+	*) exit 0 ;;
+esac
+
+case "$INTERFACE" in
+	lan|wan|br-lan|pppoe-wan|eth0|eth1|lan1|lan2) ;;
+	*) exit 0 ;;
+esac
+
+[ -x /etc/init.d/mtk-rx-tune ] || exit 0
+
+# 后台执行，不阻塞 hotplug 处理链
+( sleep 5; /etc/init.d/mtk-rx-tune reload ) >/dev/null 2>&1 &
+
+exit 0
