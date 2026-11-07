@@ -9,6 +9,38 @@
 > 包含内核补丁,因此必须**全源码编译**——这也让我们能自定义到内核级
 > (如 eBPF/BTF),这是 ImageBuilder 做不到的。
 
+---
+
+## 本仓库的来源与许可 (Provenance & License)
+
+这是一个 **fork**,在下列工作的基础上做硬件验证与修正:
+
+- 原始构建配方:**[Kitsune2077/mt5000-immortalwrt](https://github.com/Kitsune2077/mt5000-immortalwrt)**
+  — 本仓库的 workflow、`config/`、`files/` 与补丁分层结构均来自该项目。
+  上游仓库未附带 LICENSE 文件;本 fork 依 GPL-2.0 分发所作用的衍生工作,
+  并在此明确署名与致谢。
+- 设备支持与交换机驱动:OpenWrt 上游 **PR [#24237](https://github.com/openwrt/openwrt/pull/24237)**
+  (GL.iNet `GLiNet-Tech`,作者 John Crispin),GPL-2.0。
+  补丁 `patches/0001` 即该 PR 的移植,`0002`–`0005` 为上游审阅修复与
+  后续 `89a10ec` / `1713e8be63` 版本同步。
+- 802.1Q tagger + MTK PPE 卸载思路的独立实现参考:
+  [Beaverfffan/x-wrt-push](https://github.com/Beaverfffan/x-wrt-push)
+  (其 `795-10` / `795-11` / `799-91` 系列的守卫写法与协议号论证更严谨,
+  本 fork 的后续改进会向该实现对齐)。
+- 基线系统:[ImmortalWrt](https://github.com/immortalwrt/immortalwrt),GPL-2.0。
+
+**许可证**:本仓库的构建配方、脚本与补丁以 **GPL-2.0** 发布,见 [LICENSE](LICENSE)。
+固件产物 (squashfs/sysupgrade 镜像) 因包含 Linux 内核及 GPL 组件,同样受 GPL-2.0 约束,
+再分发时须随附对应源码 (本仓库的 workflow 与 patch 即构成对应源码的完整可复现路径)。
+
+## 本 fork 相对上游的改动
+
+| 提交 | 内容 | 依据 |
+|---|---|---|
+| `opt(config): drop wireless supplicant stack` | 关闭 `wpad*` / `hostapd-common` / `wpa-supplicant` | MT5000 无 Wi-Fi 射频;原配置下这三个包全部启动失败并占用约 18 MB RAM |
+| `opt(config): disable UPnP/IGD by default` | 关闭 `miniupnpd` / `luci-app-upnp` | 降低默认攻击面;需要时可在 LuCI 手动开启 |
+| `docs: add LICENSE and provenance` | 补 GPL-2.0 LICENSE 与来源声明 | 合规 |
+
 ## 编译时自定义选项(Run workflow 时填写)
 
 | 选项 | 说明 | 默认值 |
