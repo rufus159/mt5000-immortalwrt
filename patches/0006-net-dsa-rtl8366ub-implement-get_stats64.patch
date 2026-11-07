@@ -1,0 +1,98 @@
+From: rufus159 <rufus159@users.noreply.github.com>
+Date: Sat, 7 Nov 2026 18:30:00 +0800
+Subject: [PATCH] net: dsa: rtl8366ub: implement get_stats64
+
+The RTL8366UB DSA driver registers get_ethtool_stats() but not the
+rtnl_link_stats64 callback, so every userspace counter read
+(/sys/class/net/lanN/statistics/*, ifconfig, LuCI status page) falls
+back to the DSA core default and reports the conduit interface's
+aggregate numbers for every user port.
+
+On GL-MT5000 this shows up as lan1 carrying the whole bridge's traffic
+and lan2 reporting a few kilobytes, even though `ethtool -S lan2` (the
+path that does reach rtl8366ub_mib_get_stats()) shows multi-gigabyte
+counters. Physical forwarding is correct; only the accounting is wrong.
+
+Add rtl8366ub_sw_get_stats64() on top of the existing MIB reader and
+register it, so each user port reports its own hardware counters.
+
+Signed-off-by: rufus159 <rufus159@users.noreply.github.com>
+---
+ drivers/net/dsa/realtek/rtl8366ub_dsa.c | 55 +++++++++++++++++++++++++
+ 1 file changed, 55 insertions(+)
+
+diff --git a/drivers/net/dsa/realtek/rtl8366ub_dsa.c b/drivers/net/dsa/realtek/rtl8366ub_dsa.c
+--- a/drivers/net/dsa/realtek/rtl8366ub_dsa.c
++++ b/drivers/net/dsa/realtek/rtl8366ub_dsa.c
+@@ -799,6 +799,60 @@
+     rtl8366ub_mib_get_stats(priv, port, data);
+ }
+ 
++/* MIB slot indices, keep in sync with rtl8366ub_mibs[] in rtl8366ub_mib.c.
++ * The table there is: 0 ifInOctets, 1 ifOutOctets, 2 ifInUcastPkts,
++ * 3 ifInMulticastPkts, 4 ifInBroadcastPkts, 5 ifOutUcastPkts,
++ * 6 ifOutMulticastPkts, 7 ifOutBroadcastPkts, 8 dot3StatsFCSErrors,
++ * 9 dot3StatsSymbolErrors, 14 etherStatsDropEvents, 16 ifOutDiscards.
++ */
++enum {
++    RTL_MIB_IFINOCTETS,
++    RTL_MIB_IFOUTOCTETS,
++    RTL_MIB_IFINUCASTPKTS,
++    RTL_MIB_IFINMULTICASTPKTS,
++    RTL_MIB_IFINBROADCASTPKTS,
++    RTL_MIB_IFOUTUCASTPKTS,
++    RTL_MIB_IFOUTMULTICASTPKTS,
++    RTL_MIB_IFOUTBROADCASTPKTS,
++    RTL_MIB_DOT3STATSFCSERRORS,
++    RTL_MIB_DOT3STATSSYMBOLERRORS,
++    RTL_MIB_DOT3INPAUSEFRAMES,
++    RTL_MIB_DOT3OUTPAUSEFRAMES,
++    RTL_MIB_ETHERSTATSFRAGMENTS,
++    RTL_MIB_ETHERSTATSJABBERS,
++    RTL_MIB_ETHERSTATSDROPEVENTS,
++    RTL_MIB_DOT1DTPPORTINDISCARDS,
++    RTL_MIB_IFOUTDISCARDS,
++    RTL_MIB_MAX,
++};
++
++static void rtl8366ub_sw_get_stats64(struct dsa_switch *ds, int port,
++                                     struct rtnl_link_stats64 *s)
++{
++    struct rtl8366ub_priv *priv = ds->priv;
++    u64 data[RTL_MIB_MAX];
++
++    if (!dsa_is_user_port(ds, port))
++        return;
++
++    memset(data, 0, sizeof(data));
++    rtl8366ub_mib_get_stats(priv, port, data);
++
++    s->rx_bytes   = data[RTL_MIB_IFINOCTETS];
++    s->tx_bytes   = data[RTL_MIB_IFOUTOCTETS];
++    s->rx_packets = data[RTL_MIB_IFINUCASTPKTS] +
++                    data[RTL_MIB_IFINMULTICASTPKTS] +
++                    data[RTL_MIB_IFINBROADCASTPKTS];
++    s->tx_packets = data[RTL_MIB_IFOUTUCASTPKTS] +
++                    data[RTL_MIB_IFOUTMULTICASTPKTS] +
++                    data[RTL_MIB_IFOUTBROADCASTPKTS];
++    s->rx_errors  = data[RTL_MIB_DOT3STATSFCSERRORS] +
++                    data[RTL_MIB_DOT3STATSSYMBOLERRORS];
++    s->rx_dropped = data[RTL_MIB_ETHERSTATSDROPEVENTS] +
++                    data[RTL_MIB_DOT1DTPPORTINDISCARDS];
++    s->tx_dropped = data[RTL_MIB_IFOUTDISCARDS];
++}
++
+ static int rtl8366ub_get_sset_count(struct dsa_switch *ds, int port, int sset)
+ {
+     if (sset != ETH_SS_STATS)
+@@ -1305,6 +1359,7 @@
+     .phy_read = rtl8366ub_sw_phy_read,
+     .phy_write = rtl8366ub_sw_phy_write,
+     .get_ethtool_stats = rtl8366ub_sw_get_ethtool_stats,
++    .get_stats64 = rtl8366ub_sw_get_stats64,
+     .get_sset_count = rtl8366ub_get_sset_count,
+     .port_enable = rtl8366ub_sw_port_enable,
+     .port_disable = rtl8366ub_sw_port_disable,
+-- 
+2.43.0
+
