@@ -61,9 +61,14 @@ on:
           - full
           - light
       enable_store:
-        description: '集成 iStore 软件商店'
+        description: '集成 iStore 软件商店（引入 linkease/istore 第三方源）'
         required: false
-        default: true
+        default: false
+        type: boolean
+      enable_luci_app_run:
+        description: '集成 luci-app-run 网页安装器（引入 wukongdaily 第三方源）'
+        required: false
+        default: false
         type: boolean
       bake_daede:
         description: '将 daede(dae/daed 代理)编译进固件 (否则刷机后脚本安装)'
@@ -183,7 +188,8 @@ jobs:
       UI_LANG: ${{ github.event.inputs.ui_lang || 'zh-cn' }}
       ROOTFS_SIZE: ${{ github.event.inputs.rootfs_size || '2048' }}
       LUCI_FLAVOR: ${{ github.event.inputs.luci_flavor || 'full' }}
-      ENABLE_STORE: ${{ github.event.inputs.enable_store }}
+      ENABLE_STORE: ${{ github.event.inputs.enable_store || 'false' }}
+      ENABLE_LUCI_APP_RUN: ${{ github.event.inputs.enable_luci_app_run || 'false' }}
       BAKE_DAEDE: ${{ github.event.inputs.bake_daede }}
       ENABLE_HONK: ${{ github.event.inputs.enable_honk }}
       EXTRA_SERVICES: ${{ github.event.inputs.extra_services || 'none' }}
@@ -328,10 +334,17 @@ jobs:
         run: |
           cd immortalwrt
           cp -r ../files/. ./
-          # luci-app-run (wukongdaily 网页上传/运行安装器) 必装: 源码 feed (注意分支是 master)
-          echo 'src-git wkd https://github.com/wukongdaily/luci-app-run;master' >> feeds.conf.default
+          # ---- third-party feeds are OPT-IN and OFF by default ----
+          # The goal is a firmware that matches a stock ImmortalWrt wired
+          # router: only official feeds, no extra package sources.
+          # Each block below is gated on its own workflow input.
+          if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
+            # luci-app-run: web upload/run installer (wukongdaily source feed)
+            echo 'src-git wkd https://github.com/wukongdaily/luci-app-run;master' >> feeds.conf.default
+          fi
           if [ "$ENABLE_STORE" = "true" ] || [ "$ENABLE_QUICKSTART" = "true" ]; then
-            # luci-app-quickstart 硬依赖 luci-app-store, 故 quickstart 也需要 istore 源
+            # luci-app-quickstart hard-depends on luci-app-store, so the
+            # istore feed is needed for quickstart as well
             echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
           fi
           if [ "$ENABLE_QUICKSTART" = "true" ]; then
@@ -356,9 +369,10 @@ jobs:
           # 2.4.7 (no settings UI; the standalone argon-config app does not
           # exist on that branch either). Overlay luci master's theme (3.x,
           # settings built into the theme) so both profiles get the same
-          # configurable theme. Remove this block once upstream backports
-          # argon 3.x to the openwrt-25.12 luci feed.
-          if [ "$IWRT_PROFILE" = "25.12" ]; then
+          # configurable theme.
+          # Only needed when the theme is actually selected (luci-apps seed);
+          # with the stock-bootstrap default this block is skipped.
+          if [ "$IWRT_PROFILE" = "25.12" ] && [ "$LUCI_EXTRA_APPS" = "true" ]; then
             git -C feeds/luci fetch --depth 1 origin master
             rm -rf feeds/luci/themes/luci-theme-argon
             git -C feeds/luci checkout FETCH_HEAD -- themes/luci-theme-argon
@@ -488,7 +502,9 @@ jobs:
           echo "=== sanity check ==="
           grep -qE 'TARGET_mediatek_filogic_DEVICE_glinet_gl-mt5000=y' .config || { echo "::error::设备目标缺失"; exit 1; }
           grep -qE 'CONFIG_KERNEL_DEBUG_INFO_BTF=y' .config            || { echo "::error::内核 BTF 缺失"; exit 1; }
-          grep -qE 'CONFIG_PACKAGE_luci-app-run=y' .config             || { echo "::error::luci-app-run 缺失 (wkd feed 安装失败?)"; exit 1; }
+          if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
+            grep -qE 'CONFIG_PACKAGE_luci-app-run=y' .config || { echo "::error::luci-app-run 缺失 (wkd feed 安装失败?)"; exit 1; }
+          fi
           # USB 网络(网卡/4G/5G 转接板/手机共享)关键符号抽查
           for U in kmod-usb3 kmod-usb-net-qmi-wwan kmod-usb-net-cdc-mbim kmod-usb-net-cdc-ncm kmod-usb-net-rndis kmod-usb-net-ipheth kmod-usb-net-rtl8152; do
             grep -qE "^CONFIG_PACKAGE_${U}=y" .config || { echo "::error::USB 网络组件缺失: $U (包名变动? 请核对 config/mt5000.seed)"; exit 1; }
@@ -846,7 +862,9 @@ jobs:
             echo "- 内核 BTF + XDP_SOCKETS(eBPF CO-RE 前置,daede 可用)"
             echo "- daede 运行前置依赖:kmod 五件套 + v2ray geo 数据 + ca-bundle"
             echo "- autocore 状态页(CPU 型号/频率/温度)"
-            echo "- luci-app-run 网页上传/运行安装器(必装, 支持 .run/.sh/.ipk/.apk)"
+            if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
+              echo "- luci-app-run 网页上传/运行安装器(支持 .run/.sh/.ipk/.apk)"
+            fi
             echo "- USB 口网络全家桶:USB 网卡(RTL815x/AX88179/ASIX/LAN78xx)、4G/5G 转接板(QMI/MBIM/NCM+串口)、手机 USB 共享(安卓 RNDIS/NCM、iPhone)"
             if [ "$ENABLE_MWAN3" = "true" ]; then
               echo "- mwan3 多线管理(有线/随身WiFi/手机共享 优先级与故障转移, LuCI「网络→Multi WAN」; 已限定只接管 IPv4, 不会影响 IPv6)"

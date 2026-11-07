@@ -77,12 +77,14 @@ CONFIG_LUCI_LANG_zh_Hans=y
 # Status page: CPU model / freq / temperature (ImmortalWrt specific)
 CONFIG_PACKAGE_autocore=y
 
-# Web upload/run installer (mandatory; wukongdaily, feed added by the workflow)
-CONFIG_PACKAGE_luci-app-run=y
+# Web upload/run installer (wukongdaily feed). OFF by default: it is a
+# third-party source and this build targets a stock-feed-only package set.
+# Enable via the workflow input `enable_luci_app_run`.
+# CONFIG_PACKAGE_luci-app-run is not set
 
-# iStore app store (feed added by the workflow)
-CONFIG_PACKAGE_xz-utils=y
-CONFIG_PACKAGE_luci-app-store=y
+# iStore app store (linkease/istore feed). OFF by default for the same reason.
+# Enable via the workflow input `enable_store`.
+# CONFIG_PACKAGE_luci-app-store is not set
 
 # --- GL-MT5000 hardware is wired-only (no Wi-Fi radio) ---
 # The stock target pulls in wpad + hostapd + wpa_supplicant, which all fail
