@@ -44,20 +44,6 @@ on:
           - '2048'
           - '4096'
           - '8192'
-      store_mode:
-        description: 'iStore 相关（none=都不装(默认,纯官方源); store=只装 iStore; quickstart=iStore+quickstart 首页）'
-        required: false
-        default: 'none'
-        type: choice
-        options:
-          - 'none'
-          - 'store'
-          - 'quickstart'
-      enable_luci_app_run:
-        description: '集成 luci-app-run 网页安装器（引入 wukongdaily 第三方源）'
-        required: false
-        default: false
-        type: boolean
       extra_services:
         description: '附加服务: none=都不装; mwan3=多线管理(LuCI 网络→Multi WAN, 编入时自动只接管 IPv4, 不影响 IPv6); docker=Docker+Dockerman; docker+mwan3=两者都装'
         required: false
@@ -173,14 +159,9 @@ jobs:
       TIMEZONE: ${{ github.event.inputs.timezone || 'Asia/Shanghai' }}
       UI_LANG: ${{ github.event.inputs.ui_lang || 'zh-cn' }}
       ROOTFS_SIZE: ${{ github.event.inputs.rootfs_size || '2048' }}
-      # store_mode 是三态 choice（none/store/quickstart），在这里派生成原来
-      # 两个独立 boolean，下游所有 ENABLE_STORE / ENABLE_QUICKSTART 判断不变。
-      # 原因：GitHub 对 workflow_dispatch 的 inputs 有 25 个上限，原作者写到了
-      # 26 个，导致手动触发直接被 API 拒绝（HTTP 422 "you may only define up
-      # to 25 inputs"），历史上从没成功手动触发过一次。
-      ENABLE_STORE: ${{ (github.event.inputs.store_mode == 'store' || github.event.inputs.store_mode == 'quickstart') && 'true' || 'false' }}
-      ENABLE_QUICKSTART: ${{ github.event.inputs.store_mode == 'quickstart' && 'true' || 'false' }}
-      ENABLE_LUCI_APP_RUN: ${{ github.event.inputs.enable_luci_app_run || 'false' }}
+      # 第三方源（iStore / quickstart / luci-app-run）已整体移除：本项目
+      # 只用官方 feeds，固件包集 = 官方默认 + seed 里显式列出的那几项。
+      # 需要某个第三方包时走 extra_feeds + extra_packages，或直接改 seed。
       EXTRA_SERVICES: ${{ github.event.inputs.extra_services || 'none' }}
       PPPOE: ${{ github.event.inputs.pppoe }}
       PPPOE_USERNAME: ${{ github.event.inputs.pppoe_username }}
@@ -424,25 +405,10 @@ jobs:
         run: |
           cd immortalwrt
           cp -r ../files/. ./
-          # ---- third-party feeds are OPT-IN and OFF by default ----
-          # The goal is a firmware that matches a stock ImmortalWrt wired
-          # router: only official feeds, no extra package sources.
-          # Each block below is gated on its own workflow input.
-          if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
-            # luci-app-run: web upload/run installer (wukongdaily source feed)
-            echo 'src-git wkd https://github.com/wukongdaily/luci-app-run;master' >> feeds.conf.default
-          fi
-          if [ "$ENABLE_STORE" = "true" ] || [ "$ENABLE_QUICKSTART" = "true" ]; then
-            # luci-app-quickstart hard-depends on luci-app-store, so the
-            # istore feed is needed for quickstart as well
-            echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
-          fi
-          if [ "$ENABLE_QUICKSTART" = "true" ]; then
-            # quickstart 首页: 核心包(预编译二进制, 仅 x86_64/aarch64/arm)在
-            # nas-packages; LuCI 前端 luci-app-quickstart 在 nas-packages-luci
-            echo 'src-git nas https://github.com/linkease/nas-packages;master' >> feeds.conf.default
-            echo 'src-git nasluci https://github.com/linkease/nas-packages-luci;main' >> feeds.conf.default
-          fi
+          # ---- 只用官方 feeds ----
+          # 固件包集 = 官方 filogic 默认 + config/mt5000.seed 里显式列出的项。
+          # 第三方源（istore / wukongdaily / nas-packages）已整块删除，它们是
+          # 构建时间的净负担，且与「只用官方源」的目标冲突。
           if [ -n "$EXTRA_FEEDS" ]; then
             printf '%s' "$EXTRA_FEEDS" | tr '|' '\n' | while IFS= read -r FEEDLINE; do
               FEEDLINE=$(printf '%s' "$FEEDLINE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -453,13 +419,6 @@ jobs:
           fi
           ./scripts/feeds update -a
           ./scripts/feeds install -a
-          if [ "$ENABLE_STORE" = "true" ] || [ "$ENABLE_QUICKSTART" = "true" ]; then
-            ./scripts/feeds install -d y -p istore luci-app-store
-          fi
-          if [ "$ENABLE_QUICKSTART" = "true" ]; then
-            ./scripts/feeds install -f -p nas quickstart
-            ./scripts/feeds install -f -p nasluci luci-app-quickstart
-          fi
           if [ -n "$EXTRA_FEEDS" ]; then
             # extra feeds take precedence over stock feeds on package-name conflicts
             for FEED in $(printf '%s' "$EXTRA_FEEDS" | tr '|' '\n' | sed -n 's/^src-git[[:space:]][[:space:]]*\([^ ;]*\).*/\1/p'); do
@@ -486,16 +445,6 @@ jobs:
           # LuCI 全套由 config/mt5000.seed 的 CONFIG_PACKAGE_luci=y 保证
           # (master 的 include/target.mk 不追加 tweak 段, 必须显式选中,
           #  否则 uhttpd / luci-mod-* / bootstrap 主题全都不会被拉起)
-
-          if [ "$ENABLE_STORE" != "true" ]; then
-            sed -i 's|^CONFIG_PACKAGE_luci-app-store=y|# CONFIG_PACKAGE_luci-app-store is not set|' .config
-          fi
-
-          if [ "$ENABLE_QUICKSTART" = "true" ]; then
-            # quickstart 首页/向导 (iStoreOS 风格); 核心包 quickstart 与
-            # luci-app-store 由 defconfig 依依赖链自动选中
-            printf 'CONFIG_PACKAGE_luci-app-quickstart=y\n' >> .config
-          fi
 
           if [ "$INCLUDE_DOCKER" = "true" ]; then
             printf '%s\n' \
@@ -534,9 +483,6 @@ jobs:
 
           echo "=== sanity check ==="
           grep -qE 'TARGET_mediatek_filogic_DEVICE_glinet_gl-mt5000=y' .config || { echo "::error::设备目标缺失"; exit 1; }
-          if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
-            grep -qE 'CONFIG_PACKAGE_luci-app-run=y' .config || { echo "::error::luci-app-run 缺失 (wkd feed 安装失败?)"; exit 1; }
-          fi
           if [ "$ENABLE_MWAN3" = "true" ]; then
             for U in mwan3 luci-app-mwan3; do
               grep -qE "^CONFIG_PACKAGE_${U}=y" .config || { echo "::error::多线管理组件缺失: $U (extra_services 含 mwan3 但未编入?)"; exit 1; }
@@ -554,13 +500,6 @@ jobs:
           # 内核调试能力 (pr_debug/dev_dbg 运行时开关, 依赖 debugfs)
           grep -qE '^CONFIG_KERNEL_DYNAMIC_DEBUG=y' .config            || { echo "::error::CONFIG_KERNEL_DYNAMIC_DEBUG 未生效 (config/mt5000.seed 被改动?)"; exit 1; }
           grep -qE '^CONFIG_KERNEL_DEBUG_FS=y' .config                 || { echo "::error::debugfs 未开启, dynamic debug 无法在运行时控制"; exit 1; }
-          if [ "$ENABLE_STORE" = "true" ]; then
-            grep -qE 'CONFIG_PACKAGE_luci-app-store=y' .config || { echo "::error::iStore 缺失"; exit 1; }
-          fi
-          if [ "$ENABLE_QUICKSTART" = "true" ]; then
-            grep -qE 'CONFIG_PACKAGE_luci-app-quickstart=y' .config || { echo "::error::luci-app-quickstart 缺失 (nasluci feed 安装失败?)"; exit 1; }
-            grep -qE 'CONFIG_PACKAGE_quickstart=y' .config || { echo "::error::quickstart 核心包缺失 (依赖或架构 aarch64 不满足?)"; exit 1; }
-          fi
           if [ -n "$EXTRA_PACKAGES" ]; then
             MISSING=""
             for PKG in $EXTRA_PACKAGES; do
@@ -795,7 +734,7 @@ jobs:
             echo '|---|---|'
             echo "| iwrt_ref | $IWRT_REF |"
             echo "| rootfs_size | $ROOTFS_SIZE |"
-            echo "| store_mode | $EXTRA_SERVICES |"
+            echo "| extra_services | $EXTRA_SERVICES |"
             echo "| enable_ipv6 | $ENABLE_IPV6 |"
             echo "| pppoe | $PPPOE |"
             echo "| build_jobs | ${BUILD_JOBS:-5} |"
@@ -847,10 +786,8 @@ jobs:
           IMGDIR=immortalwrt/bin/targets/mediatek/filogic
           SYS=$(ls "$IMGDIR" 2>/dev/null | grep 'glinet_gl-mt5000-squashfs-sysupgrade.bin$' | head -n1)
           [ -n "$SYS" ] || SYS="(见附件)"
-          [ "$ENABLE_STORE" = "true" ]  && STORE_OPT='已集成'  || STORE_OPT='未集成'
           [ "$INCLUDE_DOCKER" = "true" ] && DOCKER_OPT='已集成' || DOCKER_OPT='未集成'
           if [ "$ENABLE_MWAN3" = "true" ]; then MWAN3_OPT='已集成 (仅接管 IPv4; 已打 IPv6 防打标修复)'; else MWAN3_OPT='未集成'; fi
-          if [ "$ENABLE_QUICKSTART" = "true" ]; then QS_OPT='已集成 (iStoreOS 风格首页/向导)'; else QS_OPT='未集成'; fi
           if [ "$PPPOE" = "true" ]; then PPPOE_OPT="已预置 (账号密码不显示)"; else PPPOE_OPT='未预置 (DHCP)'; fi
           if [ "$ENABLE_IPV6" = "true" ]; then
             if [ "$LAN_IPV6_DNS" = "true" ]; then IPV6_DNS_OPT='通告 IPv6 DNS'; else IPV6_DNS_OPT='不通告 IPv6 DNS(DNS 走 IPv4)'; fi
@@ -878,8 +815,6 @@ jobs:
             echo "| 时区 / 语言 | $TIMEZONE / $UI_LANG |"
             echo "| 软件包分区 | ${ROOTFS_SIZE} MB |"
             echo "| LuCI 套件 | \`luci\` 全套 (含 uhttpd) |"
-            echo "| quickstart 首页 | $QS_OPT |"
-            echo "| iStore | $STORE_OPT |"
             echo "| Docker | $DOCKER_OPT |"
             echo "| mwan3 多线 | $MWAN3_OPT |"
             echo "| PPPoE | $PPPOE_OPT |"
@@ -895,9 +830,6 @@ jobs:
             echo "- 25.12 filogic 默认包集对齐:block-mount/default-settings-chn/kmod-nf-nathelper/luci"
             echo "- 基础增强:bash/curl/ip-full"
             echo "- autocore 状态页(CPU 型号/频率/温度)"
-            if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
-              echo "- luci-app-run 网页上传/运行安装器(支持 .run/.sh/.ipk/.apk)"
-            fi
             if [ "$ENABLE_MWAN3" = "true" ]; then
               echo "- mwan3 多线管理(有线/随身WiFi/手机共享 优先级与故障转移, LuCI「网络→Multi WAN」; 已限定只接管 IPv4, 不会影响 IPv6)"
             fi

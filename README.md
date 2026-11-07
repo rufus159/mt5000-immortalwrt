@@ -108,10 +108,10 @@ case DSA_TAG_PROTO_RTL8366UB_8021Q:
 
 `TX_DMA_SPTAG_V3` 与 `MTK_GDMA_SPECIAL_TAG` 只在原生 MTK tagger 下置位。
 
-> 已知改进点：master 版写的是 `proto == DSA_TAG_PROTO_MTK`（白名单），
-> Beaverfffan 的实现写 `proto != DSA_TAG_PROTO_RTL8366UB_8021Q`（黑名单）。
-> 后者不会连带改变 BE14000 所用 YT922x tagger 的 TX 路径，更严谨。
-> 本仓库后续会向该写法对齐。
+> 这里用的是**黑名单**写法：`proto != DSA_TAG_PROTO_RTL8366UB_8021Q`。
+> 上游 master 的补丁是白名单（`proto == DSA_TAG_PROTO_MTK`），会把 BE14000
+> 所用 YT922x tagger 的 TX 路径也一起改掉；黑名单只排除我们自己的 tagger，
+> 对 MT5000 行为完全等价（本机只有 MTK 与 rtl8366ub 两种 tagger），但更通用。
 
 **④ 协议号避坑**（`799-91`）
 
@@ -139,14 +139,15 @@ eth0（交换机 CPU 口）：压测期间无增长        ← 证明不经 CPU
 
 ## 软件包：只用官方源
 
-原配方会引入第三方 feed。本仓库**默认全部关闭**，目标是与官方 ImmortalWrt
-同类型有线路由器保持一致的包集。
+原配方会引入第三方 feed。本仓库**把这三个源连代码块一起删除**（不只是关掉
+开关），构建时不会再 `feeds update` 它们，固件包集与官方 ImmortalWrt 同类型
+有线路由器一致。
 
 | 第三方源 | 原行为 | 本仓库默认 |
 |---|---|---|
-| `wukongdaily/luci-app-run` | **无条件追加** | ❌ 关闭（`enable_luci_app_run`，需手动开）|
-| `linkease/istore` | `enable_store` 默认 `true` | ❌ 关闭（默认 `false`）|
-| `linkease/nas-packages` | `enable_quickstart` | 原本就默认关 |
+| `wukongdaily/luci-app-run` | **无条件追加** | ❌ **已移除**（输入 `enable_luci_app_run` 一并删除）|
+| `linkease/istore` | `enable_store` 默认 `true` | ❌ **已移除**（输入 `store_mode` 一并删除）|
+| `linkease/nas-packages` | `enable_quickstart` | ❌ **已移除**（quickstart 整体删除）|
 | `kenzok8/openwrt-daede` | `bake_daede` | ❌ **已移除**（连带 `enable_honk`，两者依赖内核 BTF，已一并删除）|
 
 ### 原配方实际多装了什么（本机实测）
@@ -247,10 +248,10 @@ echo 'file * -p' > $CTL
 |---|---|
 | `wpad*` / `hostapd-common` / `wpa-supplicant` | MT5000 **无 Wi-Fi 射频**。这三个包在本机启动即失败（`ubus: Unable to resolve path for module 'common'`），白占约 **18 MB** RAM |
 | `miniupnpd` / `luci-app-upnp` | 默认关闭，减少攻击面。需要 NAT-PMP 时在 LuCI 手动开 |
-| `luci-app-store` / iStore / `taskd` / `luci-lib-*` | 第三方源，默认关闭 |
-| `luci-app-run` | 第三方源，默认关闭 |
+| `luci-app-store` / iStore / `taskd` / `luci-lib-*`（含 istore feed 与 `store_mode` 输入）| 第三方源整体删除，构建时连 feed 都不再拉取 |
+| `luci-app-run`（含 wkd feed 与 `enable_luci_app_run` 输入）| 同上 |
 | `luci-theme-argon` | 第三方主题，默认用 bootstrap |
-| USB 上网卡全家桶（`kmod-usb-net-*` / `uqmi` / `umbim` / `kmod-usb-serial*`）| 不用 USB 4G/5G 模块，约 20 个内核模块 |
+| USB 上网卡全家桶（`kmod-usb-net-*` / `uqmi` / `umbim` / `kmod-usb-serial*`）+ `files/etc/hotplug.d/net/30-usbmodem-auto` | 不用 USB 4G/5G 模块，约 20 个内核模块；驱动没了，那个「即插即用」hotplug 脚本只会空跑，一并删除 |
 | 透明代理相关（`v2ray-geoip/geosite`、`kmod-nft-tproxy`、`kmod-sched-bpf`、`kmod-xdp-sockets-diag`、`kmod-veth`、`kmod-nft-queue`、内核 BTF）| 只做有线路由，BTF 还是内核编译时间的大头 |
 | `ttyd` / `luci-app-ttyd` / `luci-app-diskman` / `luci-app-openclash` / `luci-app-rclone` | 非必需；rclone 会拖进整套 Ruby（约 10 个包）|
 | daede / honk 整套功能（workflow 的 `bake_daede`、`enable_honk` 输入 + `config/honk/`）| 依赖内核 BTF，已随 BTF 一并彻底移除 |
@@ -263,7 +264,7 @@ echo 'file * -p' > $CTL
 | `bash` / `curl` / `ip-full` / `autocore` | 基础增强 + CPU 状态页 |
 | `CONFIG_KERNEL_DYNAMIC_DEBUG` + `CONFIG_KERNEL_DEBUG_FS` | 内核调试：`pr_debug` 运行时按文件/函数开关，排障用，见上文「内核调试」一节 |
 
-### 2. DSA 端口统计修复（`patches/0006`，仅 master）
+### 2. DSA 端口统计修复（`patches/0006`）
 
 **症状**：`/sys/class/net/lanN/statistics/*` 显示的不是该端口自己的计数。
 
@@ -337,18 +338,18 @@ git rebase master        # 或 git merge master
 | `iwrt_ref` | 空 | 留空用 master 默认基线 `f44d1535b4`（内核 6.18，有 PPE 加速）|
 | `lan_ip` | `10.0.0.1` | 默认 LAN 地址 |
 | `root_password` | `root` | 建议改掉 |
-| `enable_store` | **`false`** | iStore（第三方源）|
-| `enable_luci_app_run` | **`false`** | luci-app-run（第三方源）|
+| `extra_services` | `none` | 附加服务：`none` / `mwan3` / `docker` / `docker+mwan3` |
 | `extra_packages` | 空 | 额外编入的官方包，空格分隔 |
 
-4. 约 2.5–3.5 小时后，在 **Artifacts** 或 **Release** 下载
+4. 缓存命中约 **50–80 分钟**（toolchain/staging_dir + ccache），冷启动约
+   2.5–3 小时；完成后在 **Artifacts** 或 **Release** 下载
    `*glinet_gl-mt5000-squashfs-sysupgrade.bin`
 5. 刷机：原厂固件升级页上传，或 SSH 内 `sysupgrade -n <image>`
 
-> 注意：workflow 用的是 26 个 inputs 压到 25 个之后的合并项 —— `enable_store` /
-> `enable_quickstart` 已合并成 `store_mode`（`none` / `store` / `quickstart`）。
-> GitHub 对 `workflow_dispatch` 有 25 个输入上限，原作者写到 26 个导致手动
-> 触发一直被 API 拒绝（HTTP 422），这也是历史上从没成功手动跑过一次的原因。
+> 注意：`workflow_dispatch` 的 inputs 有 **25 个上限**（原作者写到 26 个，手动
+> 触发一直被 API 拒绝，HTTP 422）。本仓库现在只剩 18 个，因为把双基线
+> `iwrt_profile`、`store_mode`、`enable_luci_app_run`、`bake_daede`、
+> `enable_honk`、`luci_flavor`、`luci_extra_apps` 全部删掉了。
 
 ---
 
@@ -397,7 +398,7 @@ sudo apt install -y --no-install-recommends \
 - **支持 `--from <step>` 断点续跑**，CI 每次都从头
 - **并行度按内存而非核数决定**，避免容器/虚拟机里 OOM
 - **补丁步骤幂等**：用 `base SHA + 补丁清单` 做标记，重复跑会跳过；
-  换配置档时会自动把代码树重置回基线再重打（`build_dir`/`staging_dir` 不受影响）
+  基线 commit 或补丁清单变了才会重置代码树再重打（`build_dir`/`staging_dir` 不受影响）
 
 ### 断点续跑
 

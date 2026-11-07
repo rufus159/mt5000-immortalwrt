@@ -70,9 +70,7 @@ TIMEZONE=${TIMEZONE:-Asia/Shanghai}
 UI_LANG=${UI_LANG:-zh-cn}
 ROOTFS_SIZE=${ROOTFS_SIZE:-2048}
 
-STORE_MODE=${STORE_MODE:-none}          # none | store | quickstart
 EXTRA_SERVICES=${EXTRA_SERVICES:-none}  # none | mwan3 | docker | docker+mwan3
-ENABLE_LUCI_APP_RUN=${ENABLE_LUCI_APP_RUN:-false}
 
 PPPOE=${PPPOE:-false}
 PPPOE_USERNAME=${PPPOE_USERNAME:-}
@@ -99,8 +97,6 @@ SKIP_DOWNLOAD=0
 DRY_RUN=0
 
 # 由 resolve_* 派生
-ENABLE_STORE=false
-ENABLE_QUICKSTART=false
 INCLUDE_DOCKER=false
 ENABLE_MWAN3=false
 PATCHDIR=''
@@ -133,9 +129,7 @@ build-local.sh — 本地编译 GL.iNet MT5000 (Brume 3) 的 ImmortalWrt 固件
   --rootfs-size <MB>          软件包分区大小（默认 2048）
 
 软件包：
-  --store-mode none|store|quickstart   iStore / quickstart 首页（默认 none）
   --extra-services none|mwan3|docker|docker+mwan3   附加服务（默认 none）
-  --enable-luci-app-run       luci-app-run（wukongdaily 第三方 feed，默认关）
   --extra-feeds '<line>|<line>'  追加 feeds.conf 行，多个用 | 分隔
   --extra-packages '<pkg> <pkg>' 额外编入的包
 
@@ -155,8 +149,8 @@ PPPoE / IPv6：
           与 GitHub Actions 的 input 名一致，便于照抄某次 CI 运行的配置。
 
 例子：
-  # 复现 r11 那次构建（dev / master / 无 store）
-  ./scripts/build-local.sh --store-mode none
+  # 复现 r11 那次构建（全默认：只有官方包集 + seed 里的那几项）
+  ./scripts/build-local.sh
 
   # 改完补丁后增量重编，只跑 build
   ./scripts/build-local.sh --from build
@@ -188,9 +182,7 @@ parse_args() {
             --lang)             UI_LANG="$2"; shift 2 ;;
             --rootfs-size)      ROOTFS_SIZE="$2"; shift 2 ;;
 
-            --store-mode)       STORE_MODE="$2"; shift 2 ;;
             --extra-services)   EXTRA_SERVICES="$2"; shift 2 ;;
-            --enable-luci-app-run) ENABLE_LUCI_APP_RUN=true; shift ;;
             --extra-feeds)      EXTRA_FEEDS="$2"; shift 2 ;;
             --extra-packages)   EXTRA_PACKAGES="$2"; shift 2 ;;
 
@@ -226,12 +218,6 @@ resolve_inputs() {
         dim "master 默认基线: $IWRT_REF"
     fi
 
-    case "$STORE_MODE" in
-        none)                     ENABLE_STORE=false; ENABLE_QUICKSTART=false ;;
-        store)                    ENABLE_STORE=true;  ENABLE_QUICKSTART=false ;;
-        quickstart)               ENABLE_STORE=true;  ENABLE_QUICKSTART=true  ;;
-        *) die "非法 store_mode: $STORE_MODE（可选 none/store/quickstart）" ;;
-    esac
 
     case "$EXTRA_SERVICES" in
         none)          INCLUDE_DOCKER=false; ENABLE_MWAN3=false ;;
@@ -317,9 +303,7 @@ print_config() {
     printf '  %-13s %s\n' "timezone"     "$TIMEZONE / $UI_LANG"
     printf '  %-13s %s\n' "rootfs size"  "${ROOTFS_SIZE} MB"
     printf '  %-13s %s\n' "luci"         "luci 全套 (seed 固定, 含 uhttpd)"
-    printf '  %-13s %s\n' "store"        "$STORE_MODE"
     printf '  %-13s %s\n' "services"     "$EXTRA_SERVICES"
-    printf '  %-13s %s\n' "3rd-party"    "luci-app-run=$ENABLE_LUCI_APP_RUN"
     printf '  %-13s %s\n' "pppoe"        "$PPPOE"
     printf '  %-13s %s\n' "ipv6"         "$ENABLE_IPV6"
     printf '  %-13s %s\n' "from step"    "$FROM_STEP"
@@ -597,25 +581,10 @@ do_overlay() {
     cp -r "$REPO_ROOT/files/." ./
     ok "files/ overlay 已复制"
 
-    # 第三方 feed 全部默认关闭，目标是「官方源 + 有线路由器标准包集」。
-    # 每个块都独立开关，与 workflow 的 input 一致。
+    # 只用官方 feeds：固件包集 = 官方 filogic 默认 + config/mt5000.seed 显式项。
+    # 第三方源（istore / wukongdaily / nas-packages）已整块删除；确需某个第三方
+    # 包时走 --extra-feeds + --extra-packages。
     local added=0
-    if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
-        echo 'src-git wkd https://github.com/wukongdaily/luci-app-run;master' >> feeds.conf.default
-        added=$((added+1))
-    fi
-    if [ "$ENABLE_STORE" = "true" ] || [ "$ENABLE_QUICKSTART" = "true" ]; then
-        # luci-app-quickstart 硬依赖 luci-app-store，所以 quickstart 也要 istore
-        echo 'src-git istore https://github.com/linkease/istore;main' >> feeds.conf.default
-        added=$((added+1))
-    fi
-    if [ "$ENABLE_QUICKSTART" = "true" ]; then
-        # 核心包是预编译二进制（仅 x86_64/aarch64/arm）在 nas-packages，
-        # LuCI 前端在 nas-packages-luci
-        echo 'src-git nas https://github.com/linkease/nas-packages;master' >> feeds.conf.default
-        echo 'src-git nasluci https://github.com/linkease/nas-packages-luci;main' >> feeds.conf.default
-        added=$((added+2))
-    fi
     if [ -n "$EXTRA_FEEDS" ]; then
         printf '%s' "$EXTRA_FEEDS" | tr '|' '\n' | while IFS= read -r FEEDLINE; do
             FEEDLINE=$(printf '%s' "$FEEDLINE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -639,13 +608,6 @@ do_overlay() {
     ./scripts/feeds install -a >/dev/null
     ok "feeds install 完成"
 
-    if [ "$ENABLE_STORE" = "true" ] || [ "$ENABLE_QUICKSTART" = "true" ]; then
-        ./scripts/feeds install -d y -p istore luci-app-store
-    fi
-    if [ "$ENABLE_QUICKSTART" = "true" ]; then
-        ./scripts/feeds install -f -p nas quickstart
-        ./scripts/feeds install -f -p nasluci luci-app-quickstart
-    fi
     if [ -n "$EXTRA_FEEDS" ]; then
         for FEED in $(printf '%s' "$EXTRA_FEEDS" | tr '|' '\n' \
                       | sed -n 's/^src-git[[:space:]][[:space:]]*\([^ ;]*\).*/\1/p'); do
@@ -676,14 +638,6 @@ do_config() {
 
     # LuCI 全套由 config/mt5000.seed 的 CONFIG_PACKAGE_luci=y 保证
     # （master 的 include/target.mk 不追加 tweak 段，必须显式选中）
-
-    if [ "$ENABLE_STORE" != "true" ]; then
-        sed -i 's|^CONFIG_PACKAGE_luci-app-store=y|# CONFIG_PACKAGE_luci-app-store is not set|' .config
-    fi
-
-    if [ "$ENABLE_QUICKSTART" = "true" ]; then
-        printf 'CONFIG_PACKAGE_luci-app-quickstart=y\n' >> .config
-    fi
 
     if [ "$INCLUDE_DOCKER" = "true" ]; then
         printf '%s\n' \
@@ -721,10 +675,6 @@ do_config() {
     _chk() { grep -qE "$1" .config || die "$2"; }
     _chk 'TARGET_mediatek_filogic_DEVICE_glinet_gl-mt5000=y' "设备目标缺失"
 
-    if [ "$ENABLE_LUCI_APP_RUN" = "true" ]; then
-        _chk 'CONFIG_PACKAGE_luci-app-run=y' "luci-app-run 缺失（wkd feed 安装失败？）"
-    fi
-
     if [ "$ENABLE_MWAN3" = "true" ]; then
         for U in mwan3 luci-app-mwan3; do
             _chk "^CONFIG_PACKAGE_${U}=y" "多线管理组件缺失: $U"
@@ -743,13 +693,6 @@ do_config() {
     _chk '^CONFIG_KERNEL_DYNAMIC_DEBUG=y' "CONFIG_KERNEL_DYNAMIC_DEBUG 未生效（config/mt5000.seed 被改动？）"
     _chk '^CONFIG_KERNEL_DEBUG_FS=y' "debugfs 未开启，dynamic debug 无法在运行时控制"
 
-    if [ "$ENABLE_STORE" = "true" ]; then
-        _chk 'CONFIG_PACKAGE_luci-app-store=y' "iStore 缺失"
-    fi
-    if [ "$ENABLE_QUICKSTART" = "true" ]; then
-        _chk 'CONFIG_PACKAGE_luci-app-quickstart=y' "luci-app-quickstart 缺失（nasluci feed 失败？）"
-        _chk 'CONFIG_PACKAGE_quickstart=y' "quickstart 核心包缺失（依赖或架构不满足？）"
-    fi
     if [ -n "$EXTRA_PACKAGES" ]; then
         local MISSING='' PKG
         for PKG in $EXTRA_PACKAGES; do

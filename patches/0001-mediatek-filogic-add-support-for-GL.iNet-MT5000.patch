@@ -3704,7 +3704,7 @@ index 00000000000000..233892cd71a335
 + 			data |= TX_DMA_CHKSUM_V2;
 +-		if (mtk_is_netsys_v3_or_greater(eth) && netdev_uses_dsa(dev))
 ++		if (mtk_is_netsys_v3_or_greater(eth) && netdev_uses_dsa(dev) &&
-++		    dev->dsa_ptr->tag_ops->proto == DSA_TAG_PROTO_MTK)
+++		    dev->dsa_ptr->tag_ops->proto != DSA_TAG_PROTO_RTL8366UB_8021Q)
 + 			data |= TX_DMA_SPTAG_V3;
 + 	}
 + 	WRITE_ONCE(desc->txd5, data);
@@ -3721,7 +3721,7 @@ index 00000000000000..233892cd71a335
 + 
 +-	if (eth->netdev[id] && netdev_uses_dsa(eth->netdev[id]))
 ++	if (eth->netdev[id] && netdev_uses_dsa(eth->netdev[id]) &&
-++	    eth->netdev[id]->dsa_ptr->tag_ops->proto == DSA_TAG_PROTO_MTK)
+++	    eth->netdev[id]->dsa_ptr->tag_ops->proto != DSA_TAG_PROTO_RTL8366UB_8021Q)
 + 		val |= MTK_GDMA_SPECIAL_TAG;
 + 
 + 	mtk_w32(eth, val, MTK_GDMA_FWD_CFG(id));
