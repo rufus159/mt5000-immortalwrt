@@ -173,12 +173,20 @@ on:
         default: false
         type: boolean
 
+# 同一 ref 只保留一个构建。历史上 5 次 cancelled 都是重复点 Run workflow
+# 后旧任务被人工取消，白白烧掉 300+ 分钟 runner 时间。开了这个以后新任务
+# 会自动取消在跑的旧任务。
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 350
     permissions:
       contents: write
+      actions: write    # Prune stale caches 需要删除缓存
 
     env:
       IWRT_PROFILE: ${{ github.event.inputs.iwrt_profile || 'master' }}
@@ -210,11 +218,57 @@ jobs:
       EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages }}
 
     steps:
+      # GitHub 单仓库缓存上限 10G，超了按 LRU 淘汰。这里有三份缓存要共存：
+      #   dl-<ref>-*       ~2.5G  源码 tarball
+      #   stage-<ref>-*    3-5G   staging_dir (工具链)
+      #   ccache (在 stage 里) 1G
+      # 合计已经接近上限，所以构建结束后把「不是当前基线」的旧缓存删掉，
+      # 避免上一版 stage-* 把 dl-* 挤出去。需要 actions:write 权限。
+      - name: Prune stale caches
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # 保留当前基线的 dl-/stage- 缓存，删掉其它基线的，避免 10G 配额
+          # 被上一版工具链占满后把 dl/ 挤出去（LRU 淘汰）。
+          echo "keeping: dl-${IWRT_REF}-* and stage-${IWRT_REF}-*"
+          gh api "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
+            --jq '.actions_caches[] | "\(.id) \(.key)"' > /tmp/caches.txt 2>/dev/null || : > /tmp/caches.txt
+
+          n=0
+          while read -r id key; do
+            [ -z "$id" ] && continue
+            case "$key" in
+              "dl-${IWRT_REF}-"*|"stage-${IWRT_REF}-"*) continue ;;
+            esac
+            echo "deleting stale: $key"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/$id" >/dev/null 2>&1 && n=$((n+1)) || true
+          done < /tmp/caches.txt
+          echo "pruned $n stale cache(s)"
+
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache || true
+          # 实测 ubuntu-24.04 runner：清理前约 31G/145G 已用，清理后可用约 114G，
+          # 而 OpenWrt 全量编译约需 45G —— 单看编译本身不缺空间（历史 7 次失败
+          # 没有一次是 No space）。但本工作流要 restore 约 4G 的 staging_dir
+          # 缓存，解压时和编译峰值叠加，多腾一些是几乎零成本的保险。
+          #
+          # 注意不要 swapoff：runner 自带的 4G swap 是 make -j5 内存峰值的
+          # 兜底，为了 4G 磁盘丢掉它不划算。
+          echo "=== before ==="; df -h /; free -h
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/.ghcup \
+            /opt/hostedtoolcache \
+            /usr/local/share/boost \
+            /usr/share/swift \
+            /usr/local/lib/node_modules \
+            /opt/az \
+            /usr/lib/jvm || true
           sudo docker image prune -af >/dev/null 2>&1 || true
-          df -h /
+          echo "=== after ==="; df -h /; free -h; swapon --show || true
 
       - name: Checkout builder repo
         uses: actions/checkout@v4
@@ -294,11 +348,35 @@ jobs:
           git checkout "$IWRT_REF"
           git log -1 --format='base: %h %s'
 
+      # dl/ 里是上游源码 tarball，和本仓库的补丁/配置无关。
+      # 原 key 里带 hashFiles('patches/*.patch')，导致改任何补丁都会让
+      # 2.4~2.6G 的下载缓存整体失效重新拉一遍。这里只按源码基线区分，
+      # 再用 restore-keys 做前缀回退，基线变了也能复用绝大部分包。
       - name: Cache downloaded sources (dl/)
         uses: actions/cache@v4
         with:
           path: immortalwrt/dl
-          key: dl-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed', 'patches/*.patch', 'patches-25.12/*.patch') }}-${{ env.ROOTFS_SIZE }}-${{ env.BAKE_DAEDE }}-${{ env.INCLUDE_DOCKER }}
+          key: dl-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed') }}
+          restore-keys: |
+            dl-${{ env.IWRT_REF }}-
+            dl-
+
+      # staging_dir 是编译工具链（gcc/binutils bootstrap + host 工具 +
+      # target 库），单次重编 35~55 分钟，是整条流水线里最贵的一段。
+      # ccache 再缓存 C/C++ 目标文件。两者一起能把增量构建压到几十分钟。
+      # 不放 patches/ 的 hash：改补丁不影响工具链，否则等于每次都冷编。
+      # 用 restore-keys 前缀回退：seed 变了也能接续上一次的工具链。
+      - name: Cache toolchain + ccache (staging_dir)
+        uses: actions/cache@v4
+        with:
+          path: |
+            immortalwrt/staging_dir
+            immortalwrt/.ccache
+          key: stage-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed') }}-${{ env.ROOTFS_SIZE }}
+          restore-keys: |
+            stage-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed') }}-
+            stage-${{ env.IWRT_REF }}-
+            stage-
 
       - name: Apply MT5000 device patch
         run: |
@@ -561,6 +639,22 @@ jobs:
           fi
           echo "sanity check passed"
 
+      # staging_dir 从缓存解压回来后，里面的文件 mtime 是打包时间，往往比
+      # 刚生成的 .config / 刚应用的内核补丁更旧。OpenWrt 的依赖追踪完全靠
+      # 时间戳，这会让它认为 toolchain 需要重建，等于白缓存。
+      # 把 stamp 目录整体 touch 到现在，让它认定工具链是最新的。
+      - name: Refresh toolchain stamps after cache restore
+        run: |
+          cd immortalwrt
+          if [ -d staging_dir ]; then
+            echo "staging_dir present ($(du -sh staging_dir 2>/dev/null | cut -f1)) — refreshing stamp mtimes"
+            find staging_dir -type d -name stamp -exec touch -c {} + 2>/dev/null || true
+            find staging_dir -path '*/stamp/*' -type f -exec touch -c {} + 2>/dev/null || true
+            ls -d staging_dir/*/stamp 2>/dev/null | head -5 || true
+          else
+            echo "no staging_dir cache (cold build) — nothing to refresh"
+          fi
+
       - name: Generate first-boot customization (uci-defaults)
         run: |
           cd immortalwrt
@@ -793,9 +887,35 @@ jobs:
           make download -j"$(nproc)"
 
       - name: Build firmware
+        env:
+          # OpenWrt 的 rules.mk 在 CONFIG_CCACHE=y 时会自己 export
+          #   CCACHE_DIR=$(TOPDIR)/.ccache   （本仓库上就是 immortalwrt/.ccache）
+          #   CCACHE_BASEDIR=$(TOPDIR)，且强制 CCACHE_NOCOMPRESS=true。
+          # 所以这里只显式给 maxsize，其余交给它自己管，避免两边打架。
+          #
+          # maxsize 压到 1G 是配额考虑：GitHub 单仓库缓存上限 10G，
+          # dl/ 两个基线已占 4.8G，staging_dir 本身还要 3-5G。
+          # ccache 命中率前 1G 最高，再多收益递减但会把 dl/ 挤掉。
+          CCACHE_MAXSIZE: 1G
         run: |
           cd immortalwrt
-          make -j"$(nproc)" || { echo "::group::verbose retry log"; make -j1 V=s; echo "::endgroup::"; exit 1; }
+          echo "=== ccache before ==="
+          ccache -s 2>/dev/null || echo "(ccache 尚未初始化)"
+
+          # nproc+1：构建里有不少 I/O 等待，多一个进程能把 CPU 空档填满。
+          # 并行失败时改用 -j1 V=s 重跑，配合 ccache 已编译的目标会直接命中，
+          # 比从前从零串行重来便宜得多。
+          JOBS=$(( $(nproc) + 1 ))
+          echo "building with -j$JOBS"
+          make -j"$JOBS" || {
+            echo "::group::verbose retry log (make -j1 V=s)"
+            make -j1 V=s
+            echo "::endgroup::"
+            exit 1
+          }
+
+          echo "=== ccache after ==="
+          ccache -s 2>/dev/null || true
 
       - name: Show images
         run: |
