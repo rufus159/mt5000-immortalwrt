@@ -275,6 +275,8 @@ echo 'file * -p' > $CTL
 | 透明代理相关（`v2ray-geoip/geosite`、`kmod-nft-tproxy`、`kmod-sched-bpf`、`kmod-xdp-sockets-diag`、`kmod-veth`、`kmod-nft-queue`、内核 BTF）| 只做有线路由，BTF 还是内核编译时间的大头 |
 | `ttyd` / `luci-app-ttyd` / `luci-app-diskman` / `luci-app-openclash` / `luci-app-rclone` | 非必需；rclone 会拖进整套 Ruby（约 10 个包）|
 | daede / honk 整套功能（workflow 的 `bake_daede`、`enable_honk` 输入 + `config/honk/`）| 依赖内核 BTF，已随 BTF 一并彻底移除 |
+| `bridger` 及其 eBPF 依赖链（`kmod-sched-bpf` / `kmod-sched-flower` / `kmod-sched-core` / `kmod-sched-act-vlan`）| `bridger` 是 filogic 平台 `DEFAULT_PACKAGES` 带的，之前只在 seed 里关了 `kmod-sched-bpf`，它又被拉了回来。其 `$(BPF_DEPENDS)` 把 `NEED_BPF_TOOLCHAIN` 设为 y，导致 `tools/llvm-bpf` **从源码编译整套 LLVM 22.1.3**（3981 个 CXX 目标，约 1.5–2h）。eBPF 是原项目为 daed 引入的，本阶段不用，整链关闭 |
+| IPv6 / PPPoE 协议栈（`odhcp6c` / `odhcpd-ipv6only` / `ppp*` / `kmod-ppp*` / `luci-proto-ipv6` / `luci-proto-ppp`）| `ENABLE_IPV6=false`、`PPPOE=false`，router 默认集里这些用不到 |
 
 **加法**（补齐 25.12 默认包集，否则没有 web 管理）：
 
@@ -283,6 +285,13 @@ echo 'file * -p' > $CTL
 | `luci` / `block-mount` / `default-settings-chn` / `kmod-nf-nathelper` | master 的 `target.mk` 不追加 `DEFAULT_PACKAGES.tweak`，必须显式写出，详见上一节 |
 | `bash` / `curl` / `ip-full` / `autocore` | 基础增强 + CPU 状态页 |
 | `CONFIG_KERNEL_DYNAMIC_DEBUG` + `CONFIG_KERNEL_DEBUG_FS` | 内核调试：`pr_debug` 运行时按文件/函数开关，排障用，见上文「内核调试」一节 |
+
+**当前阶段（最小可用集）**：只保留基本管理（LuCI / uhttpd / 网络栈 / 磁盘挂载）与
+**PPE 硬件加速验证所需**的 `kmod-nf-flow` / `kmod-nft-offload` / `nftables-json` /
+`firewall4`（补丁 `795-11` 的 `mtk_ppe_offload.c` 正是对接 nft flow offload）。
+`config/mt5000.seed` 里所有禁用项都带注释，**等基本功能与 PPE 加速刷机验证通过后，
+再按需逐项放开**，不要一次性加回。实测关闭 eBPF 链后 `.config` 中
+`NEED_BPF_TOOLCHAIN` / `USE_LLVM_BUILD` 均消失，选中包 197 → 179。
 
 ### 2. DSA 端口统计修复（`patches/0005`）
 
