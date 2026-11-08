@@ -7,7 +7,7 @@
 #
 # 范围约束：
 #   * 源码基线只用 immortalwrt master 分支（默认 4765b65762，内核 6.18.60）
-#   * 施加到源码树上的只有 patches/ 的 6 个 format-patch 提交，以及
+#   * 施加到源码树上的只有 patches/ 的 7 个 format-patch 提交，以及
 #     config/mt5000.seed 里 6 个包
 #   * 不生成任何首启定制脚本，不写 LAN IP / 主机名 / 时区 / root 密码 /
 #     界面语言 / PPPoE / IPv6 等 uci-defaults，不追加额外包或第三方 feed
