@@ -160,7 +160,7 @@ libncurses-dev zlib1g-dev libssl-dev libelf-dev device-tree-compiler cpio
 squashfs-tools mkisofs rsync unzip gettext xxd` 等常规 OpenWrt 构建依赖。
 
 ```bash
-git clone https://github.com/foxsfire/gl-mt5000.git mt5000-immortalwrt
+git clone https://github.com/rufus159/mt5000-immortalwrt.git
 cd mt5000-immortalwrt
 ./scripts/build-local.sh --dry-run              # 先看配置
 ./scripts/build-local.sh --jobs 4               # 从头编译
