@@ -16,6 +16,7 @@
 | 目标设备 | `mediatek/filogic` → `glinet_gl-mt5000` |
 | 补丁系列 | `patches/` 下 **7 个 `format-patch` 提交**，按文件名顺序应用 |
 | 编译结果 | 2026-11-08 20:53 `BUILD_EXIT=0`（7 提交）；增量重编 6 分钟（仅内核与镜像重打） |
+| 从零复编 | 2026-11-08 21:32→22:20 清空源码树 / `dl` / 旧日志后重跑：7 个补丁全部 `ok`，`make download` 一次成功，编译阶段 37 分钟，`BUILD_EXIT=0`，包清单与首次构建**逐行一致**（172 条） |
 | 产物校验 | `sha256sums` 16 项全部 `OK`；固件包清单 **172 个包**；`rtl8366ub_phy.o` 已确认引用 `usleep_range_state` |
 | 运行期配置 | 未做 LAN IP / 密码 / 首启脚本定制，沿用官方默认（LAN `192.168.1.1`） |
 | **实机测试** | **首轮已完成**：刷机、LAN 口链路与热插拔、PPE 卸载、端口统计、LAN/WAN 吞吐；MTU、VLAN、温度、长期稳定性待补（见第 7 节） |
@@ -155,9 +156,10 @@ eip197-mini-firmware, mt7987-2p5g-phy-firmware
 ## 5. 本地编译方法
 
 环境与依赖：Ubuntu 24.04（本次在 NAS 虚拟机，8 核 / 7.8 GB 内存 / 250 GB
-空闲磁盘，`make -j4`）；需要 `git make gcc g++ python3 flex bison pkg-config
+空闲磁盘，`--jobs 5`）；需要 `git make gcc g++ python3 flex bison pkg-config
 libncurses-dev zlib1g-dev libssl-dev libelf-dev device-tree-compiler cpio
 squashfs-tools mkisofs rsync unzip gettext xxd` 等常规 OpenWrt 构建依赖。
+从空目录（含 `dl` 全部重下）到出固件实测 **48 分钟**，其中编译阶段 37 分钟。
 
 ```bash
 git clone https://github.com/rufus159/mt5000-immortalwrt.git
