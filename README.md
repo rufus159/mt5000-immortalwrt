@@ -440,7 +440,18 @@ sudo apt install -y --no-install-recommends \
 
 ## 已知问题
 
-仍在测试中
+- **`make defconfig` 会打印 3 条 `recursive dependency detected!`**（`qt5base-gui`、
+  `fwknopd`、`squeezelite-custom`）。它们来自官方 feeds 的 Kconfig，与本仓库 seed
+  无关，`Generate .config` 步骤仍然 success，属非致命噪声，不需要处理。
+- **换基线或改补丁后的首次构建是冷启动**：`dl`/`stage` 缓存 key 都含基线 SHA，
+  `stage` 还绑定 `patches/*.patch` 哈希（防旧内核头 / ccache 目标文件被复用），
+  且 `Prune stale caches` 会清掉旧基线缓存。预留 2.5–3 小时。
+  **不要重复点 Run workflow**：`concurrency` 会取消正在跑的旧任务，白白烧掉 runner 时间。
+- **内核补丁栈有早期预检**：`Verify kernel patch stack (early gate)` 在下载源码后
+  对 `795-10/11/12` 做 dry-run。外层 7 个补丁 `git apply` 成功，并不代表内嵌内核补丁
+  能打到解压后的 linux 源码树 —— run `42396108778` 就是跑了 2h10m 才在
+  `include/net/dsa.h` 上挂掉（新基线多了 `YT921X` 协议号，旧 hunk 上下文失配）。
+  本地编译的同一检查在 `scripts/check-kernel-patches.py`。
 
 ---
 

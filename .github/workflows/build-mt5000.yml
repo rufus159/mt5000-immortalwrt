@@ -369,19 +369,24 @@ jobs:
       # staging_dir 是编译工具链（gcc/binutils bootstrap + host 工具 +
       # target 库），单次重编 35~55 分钟，是整条流水线里最贵的一段。
       # ccache 再缓存 C/C++ 目标文件。两者一起能把增量构建压到几十分钟。
-      # 不放 patches/ 的 hash：改补丁不影响工具链，否则等于每次都冷编。
-      # 用 restore-keys 前缀回退：seed 变了也能接续上一次的工具链。
+      #
+      # 与 dl/ 不同，stage key 必须绑定补丁集：staging_dir 里有
+      # toolchain/kernel-headers 装出来的内核头 + ccache 目标文件，补丁
+      # （尤其 795-11 改 include/net/dsa.h）变了还复用旧 stage 缓存，
+      # 会把旧内核头/旧目标文件带进新固件。宁可让改补丁后的首次构建冷编一次。
+      # 注意：内核源码树本体在 build_dir/（未缓存），每次都会重新解压打补丁，
+      # 所以这里防的是安装产物与 ccache，不是内核源码树本身。
+      # restore-keys 只放宽 rootfs_size，去掉原来跨基线/跨配置的
+      # stage-<ref>- / stage- 两条过宽前缀（会误命中完全不同的缓存）。
       - name: Cache toolchain + ccache (staging_dir)
         uses: actions/cache@v4
         with:
           path: |
             immortalwrt/staging_dir
             immortalwrt/.ccache
-          key: stage-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed') }}-${{ env.ROOTFS_SIZE }}
+          key: stage-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed', 'patches/*.patch') }}-${{ env.ROOTFS_SIZE }}
           restore-keys: |
-            stage-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed') }}-
-            stage-${{ env.IWRT_REF }}-
-            stage-
+            stage-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed', 'patches/*.patch') }}-
 
       - name: Apply MT5000 device patch
         run: |
@@ -749,6 +754,16 @@ jobs:
         run: |
           cd immortalwrt
           make download -j"${BUILD_JOBS:-5}"
+
+      - name: Verify kernel patch stack (early gate)
+        # `git apply --check` 只能证明外层补丁能写进 ImmortalWrt 树，证明不了
+        # 内嵌的 795-10/11/12 内核补丁能打到解压后的 linux 源码树。
+        # CI run 42396108778 就是一路跑到 toolchain/kernel-headers 才在
+        # include/net/dsa.h 上挂掉，白白烧掉 2h10m。下载完源码后先做一次
+        # dry-run：从 dl/ tarball 重建 DSA 头文件、回放上游补丁栈，再校验
+        # 795-11 的上下文。失败会在几秒内暴露，不需要等全量编译。
+        run: |
+          python3 scripts/check-kernel-patches.py --tree immortalwrt
 
       - name: Build firmware
         env:
