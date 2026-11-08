@@ -494,7 +494,10 @@ do_patch() {
     local marker="$SRC_DIR/.mt5000-patches.applied"
     local base="${BASE_SHA:-$IWRT_REF}"
     local want
+    # drop_yt922x 是「补丁应用后处理」的版本号：改了源树里那组上游补丁的
+    # 删除逻辑时，必须让旧 marker 失效，否则会被上面的幂等判断整段跳过。
     want=$( { echo "base=$base";
+              echo "drop_yt922x=v1";
               for p in "$PATCHDIR"/*.patch; do basename "$p"; done; } )
 
     if [ -f "$marker" ] && [ "$(cat "$marker")" = "$want" ]; then
@@ -545,6 +548,22 @@ do_patch() {
             die "补丁链断裂于 $name"
         fi
     done
+
+    # ---- 移除上游 YT922x (Motorcomm) 补丁（与 workflow 同一处理）--------
+    # 6.18.60 基线的 967-2x/4x/5x 补丁排在 795-* 之后应用：967-27/967-40
+    # 往 dsa.h 协议枚举插 33/34，会撞上 795-11 已加的 id 200；967-41/967-53
+    # 重写 mtk_ppe_offload.c 的同一批函数，与我们的 PPE egress 改动语义冲突。
+    # MT5000 用的是 RTL8366UB，这组驱动完全用不到，直接从 pending-6.18 摘掉，
+    # 795-10/795-11 即可原样应用（967-02 / 967-09a 的 YT921x 必须保留）。
+    local dropped=0 k
+    for k in 967-27 967-40 967-41 967-49 967-50 967-51 967-52 967-53 967-54 967-55; do
+        for f in target/linux/generic/pending-6.18/$k-*.patch; do
+            [ -e "$f" ] || continue
+            rm -f "$f"
+            dropped=$((dropped+1))
+        done
+    done
+    dim "移除无关上游 YT922x 补丁: $dropped 个"
 
     printf '%s' "$want" > "$marker"
     ok "补丁完成：应用 $n 个"

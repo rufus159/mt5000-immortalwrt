@@ -464,7 +464,7 @@ sudo apt install -y --no-install-recommends \
   `Refresh toolchain stamps` 会把恢复回来的 stamp 全部 touch 成最新，半成品缓存
   会让下一次把没编完的步骤误判为已完成。
 - **内核补丁栈有早期预检**：`Verify kernel patch stack (early gate)` 在下载源码后
-  对 `795-10/11/12` 做 dry-run。外层补丁 `git apply` 成功，并不代表内嵌内核补丁
+  对 `795-10/795-11` 做 dry-run。外层补丁 `git apply` 成功，并不代表内嵌内核补丁
   能打到解压后的 linux 源码树 —— run `42396108778` 就是跑了 2h10m 才在
   `include/net/dsa.h` 上挂掉（新基线多了 `YT921X` 协议号，旧 hunk 上下文失配）。
   预检从 `target/linux/generic/kernel-6.18` 读内核版本，优先用 `dl/` 里真正的
@@ -479,6 +479,17 @@ sudo apt install -y --no-install-recommends \
   对它的修改），而不是调 hunk 行号。
   run `42433695951` 曾因旧版脚本把 `linux-firmware-*.tar.xz` 误当内核源码包而
   在 8 分钟处误杀构建，现已改为精确匹配 + 取不到源码时告警放行（不阻断构建）。
+
+- **6.18.60 的 YT922x 上游补丁已从构建树摘除**（2026-11-08 本地编译发现）：
+  `967-27/40` 往 `include/net/dsa.h` 的协议枚举插 `YT922X 33/34`，而 `795-11`
+  已在同位置加 out-of-tree id `200`；`967-41/967-53` 又重写 `mtk_ppe_offload.c`
+  的 `mtk_flow_set_output_device` 一带，与本项目的 PPE egress 改动语义冲突
+  （三方合并 3 处冲突，硬合并会破坏硬件加速）。MT5000 用 RTL8366UB，这组
+  Motorcomm 驱动完全用不到，因此在 `Apply MT5000 device patch` 之后移除
+  `967-27/40/41/49..55`（10 个），`967-02` / `967-09a`（YT921x，795-11 的 hunk
+  依赖它）保留。实测排除后内核补丁链 54 段 0 FAILED，`dsa.h` 以 `YT921X 32`
+  + `200` 结尾。`scripts/build-local.sh` 的 `drop_yt922x=v1` 标记保证本地幂等；
+  换基线时若上游这组补丁变动，重新核对即可。
 
 ---
 

@@ -426,6 +426,24 @@ jobs:
             git apply --check "$p" && git apply "$p" || { echo "::error::$p 应用失败; 基线 $IWRT_REF 可能已变动, 请显式指定已知可用 iwrt_ref 或基于 master 重新生成补丁"; exit 1; }
           done
 
+          # ---- 移除上游 YT922x (Motorcomm) 补丁 --------------------------
+          # 6.18.60 新基线带来一整组 967-2x/4x/5x 补丁，给 YT922x 交换机加
+          # DSA tag 与 PPE offload 支持。MT5000 用的是 RTL8366UB，用不到它们，
+          # 但它们按文件名排在 795-* 之后、会在我们的补丁之后应用：
+          #   * 967-27 / 967-40 往 include/net/dsa.h 的协议枚举里插 33/34，
+          #     而 795-11 已在同位置插入 out-of-tree id 200 -> Hunk FAILED
+          #   * 967-41 / 967-53 改 mtk_ppe_offload.c 的同一批函数，
+          #     会与 795-11 的 PPE egress 改动互相破坏（三方合并 3 处冲突）
+          # 让自研补丁后移需要把两套 PPE 改动做语义合并，风险高于收益。
+          # 这里直接把这组无关驱动从 pending-6.18 摘掉：dsa.h 回到以
+          # YT921X(32) 结尾的状态，mtk_ppe_offload.c 也不再被上游重写，
+          # 795-10/795-11 可原样应用。实测排除后内核补丁链 54 段 0 FAILED。
+          # 967-02 / 967-09a (YT921x, 795-11 的 hunk 依赖它) 必须保留。
+          for n in 967-27 967-40 967-41 967-49 967-50 967-51 967-52 967-53 967-54 967-55; do
+            rm -f target/linux/generic/pending-6.18/$n-*.patch
+          done
+          echo "YT922x patches dropped; remaining 967-*: $(ls target/linux/generic/pending-6.18/967-*.patch 2>/dev/null | wc -l)"
+
       - name: Overlay files/ and feeds
         run: |
           cd immortalwrt

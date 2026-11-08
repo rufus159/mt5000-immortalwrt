@@ -47,6 +47,13 @@ CI run 42435518902: an earlier version replayed the WHOLE stack, including
 967-27 / 967-40 (YT922x) which sort after 795-* and are applied by make only
 after 795-11. That produced a final-state dsa.h with YT922X 33/34 and made an
 already-correct 795-11 look broken. The replay is therefore cut at 795-11.
+
+As of 2026-11-08 the 967-2x/4x/5x (YT922x) upstream patches are removed from
+the build tree right after the outer patches are applied (see workflow and
+build-local.sh); only 967-02 / 967-09a (YT921x) remain. They collide with our
+dsa.h protocol id and with the mtk_ppe_offload.c PPE egress changes, and the
+MT5000 uses an RTL8366UB rather than a Motorcomm switch. The 795-11 cutoff
+remains correct: no later upstream patch touches dsa.h any more.
 """
 
 import argparse
