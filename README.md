@@ -1,9 +1,10 @@
 # GL.iNet GL-MT5000 · ImmortalWrt 6.18 移植记录
 
-> **当前状态：本地编译已跑通｜硬件实测仍在进行中**
+> **当前状态：本地编译已跑通｜首轮实机验证完成（LAN 链路抖动已修复并验证）｜其余项测试进行中**
 >
 > 本仓库只用于记录补丁与开发过程，固件一律在**本地**编译，不使用 CI 构建。
-> 镜像尚未完成实机验证，请勿用于生产环境；刷机与实机测试结论待补。
+> 已完成刷机与首轮实机验证（详见第 7 节），MTU、VLAN、温度与长期稳定性
+> 尚未覆盖，请勿用于生产环境。
 
 ---
 
@@ -14,10 +15,10 @@
 | 源码基线 | ImmortalWrt `master` @ `4765b657625ec5bbda74b44400465fe043802b30`，Linux **6.18.60** |
 | 目标设备 | `mediatek/filogic` → `glinet_gl-mt5000` |
 | 补丁系列 | `patches/` 下 **7 个 `format-patch` 提交**，按文件名顺序应用 |
-| 编译结果 | 2026-11-08 18:26 `BUILD_EXIT=0`；干净内核树全量重编约 9 分钟（已有工具链缓存） |
-| 产物校验 | 4 个文件 sha256 全部 `OK`；固件包清单 **172 个包** |
+| 编译结果 | 2026-11-08 20:53 `BUILD_EXIT=0`（7 提交）；增量重编 6 分钟（仅内核与镜像重打） |
+| 产物校验 | `sha256sums` 16 项全部 `OK`；固件包清单 **172 个包**；`rtl8366ub_phy.o` 已确认引用 `usleep_range_state` |
 | 运行期配置 | 未做 LAN IP / 密码 / 首启脚本定制，沿用官方默认（LAN `192.168.1.1`） |
-| **实机测试** | **仍在进行中**：刷机、LAN 口链路、PPE 卸载、端口统计、MTU、温度等尚无结论 |
+| **实机测试** | **首轮已完成**：刷机、LAN 口链路与热插拔、PPE 卸载、端口统计、LAN/WAN 吞吐；MTU、VLAN、温度、长期稳定性待补（见第 7 节） |
 
 补丁已确认真正落地到内核源码树，而不只是补丁文件写对：`rtl8366ub_dsa.c` 中
 `get_stats64` 与 `port_max_mtu` 回调均已注册，`999-90` 对
@@ -50,7 +51,9 @@
    偶发的坏读数会让 phylib 关掉 carrier、丢弃当时排队的帧。实测开机 60 分钟
    内 67 次 Link Down，每次精确 1.0 s 恢复，lan1/lan2 交替出现，LuCI 概览
    页因此反复显示"未连接"。改动为：状态翻转时先复读确认，仍不一致则要求
-   连续 2 个轮询周期都读到新状态才采纳，真实插拔最多晚 1 s 被发现。
+   连续 2 个轮询周期都读到新状态才采纳，真实插拔比单次采样最多晚一个周期。
+   刷入该版后同一台设备 480 s 内 **0 次自发 Down**（基线预期约 9 次），
+   真实插拔仍在 1–2 s 内上报，详见第 7 节。
 
 另外把这两处改动按上游 `795-10` 的真实行号与 tab 缩进重新对齐，校正了
 vendored patch 内层 hunk 计数（952 → 1002 → 1012），并补齐合规的
@@ -147,7 +150,7 @@ eip197-mini-firmware, mt7987-2p5g-phy-firmware
 | `...-glinet_gl-mt5000.manifest` | 5 KB | 包清单（上一节数据来源） |
 
 产物位于 `immortalwrt/bin/targets/mediatek/filogic/`，刷机前先执行
-`sha256sum -c sha256sums`。**刷机请自行确认，实机验证尚未完成。**
+`sha256sum -c sha256sums`。**刷机请自行确认；本仓库产物为自用构建，不提供任何担保。**
 
 ## 5. 本地编译方法
 
@@ -157,7 +160,7 @@ libncurses-dev zlib1g-dev libssl-dev libelf-dev device-tree-compiler cpio
 squashfs-tools mkisofs rsync unzip gettext xxd` 等常规 OpenWrt 构建依赖。
 
 ```bash
-git clone https://github.com/rufus159/mt5000-immortalwrt-private.git mt5000-immortalwrt
+git clone https://github.com/foxsfire/gl-mt5000.git mt5000-immortalwrt
 cd mt5000-immortalwrt
 ./scripts/build-local.sh --dry-run              # 先看配置
 ./scripts/build-local.sh --jobs 4               # 从头编译
@@ -185,18 +188,32 @@ Kconfig 缺失符号 → `make defconfig` → `make download` → `make`。
 - 旧的「内核补丁 dry-run 门禁」是针对被替换掉的折叠补丁写的，已移除；
   补丁正确性以完整编译验证为准。
 
-## 7. 硬件实测（进行中）
+## 7. 硬件实测
 
-以下内容**尚未取得实机结论**，随测试推进再补：
+### 7.1 已验证（GL-MT5000 实机，2026-11-08）
 
-- nft flowtable 下发后 `/sys/kernel/debug/mtk_ppe/entries` 表项与计数器、
-  2.5G 单流吞吐与 CPU 占用（PPE 卸载是否真正生效）
-- 各 LAN 口链路协商、热插拔、LAN2 偶发「未连接」现象
-- `/sys/class/net/lanN/statistics/*` 与 LuCI 概览页的每端口统计是否准确
-- 用户口 MTU、tag_8021q 的 VLAN 增删与 bridge 反复操作
-- 待机温度、ethtool 计数、MTK 原生标签设备的回归对比
+| 项目 | 结论 |
+| --- | --- |
+| 刷机与固化 | `sysupgrade` 正常；运行内核已通过 eMMC `mmcblk0p6` 分区与镜像 FIT 逐字节比对确认 |
+| 端口协商 | `lan1`/`lan2`/`eth0`/`eth1` 均为 **2500 Mbps 全双工** |
+| LAN↔LAN 转发 | RTL8366UB 交换芯片**硬件直通**：手机↔内网 iperf3 1.66 Gbps 时 `eth0`（CPU 上行口）计数为 0、四核占用 1.3% |
+| WAN↔LAN 卸载 | MTK PPE 生效：下行 1.1 Gbps 期间 `ppe1_bytes` 以约 126 MB/s 递增、四核占用 1.4–2.7% |
+| 吞吐基线 | 手机（WiFi 桥接经 `lan1`）下行 >1.3 Gbps、上行 1.0–1.28 Gbps；路由器本机↔内网主机单流双向 2.3–2.5 Gbps、零重传 |
+| LAN2「未连接」现象 | 定位为 `rtl8366ub_phy_read_status()` 单次采样判 `link`，第 7 提交去抖后 480 s 内 **0 次**自发 Down（基线预期约 9 次），真实插拔仍在 1–2 s 内上报 |
+| 每端口统计 | `lan1`/`lan2` 计数准确（偏差即以太网帧开销）；`br-lan`、`pppoe-wan` 漏计是硬件交换与 PPE 卸载的正常结果，不是故障 |
 
-> **再次说明：以上均为待验证项，当前固件还没有通过实机测试。**
+补充两点实测记录：PPE 表在 debugfs 的真实路径是 `/sys/kernel/debug/ppe0`、
+`/sys/kernel/debug/ppe1`（不是早期文档里的 `mtk_ppe/`）；软件路径上的
+`br-lan` / `pppoe-wan` 包计数会被 GRO/GSO 聚合，平均每「包」可达数十 KB，
+按包对比没有意义，按接口算账应读 `lan1`/`lan2` 或使用 `nlbwmon`。
+
+### 7.2 待验证
+
+- 用户口 MTU、`tag_8021q` 的 VLAN 增删与 bridge 反复操作
+- 待机与满载温度、`ethtool` 计数，以及与 MTK 原生标签设备的回归对比
+- 长时间（数天）稳定性，以及链路抖动在长窗口下的复核
+
+> 首轮结论仅覆盖上述已验证项；未覆盖项请勿视为通过。
 
 ---
 
