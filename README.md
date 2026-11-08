@@ -448,10 +448,15 @@ sudo apt install -y --no-install-recommends \
   且 `Prune stale caches` 会清掉旧基线缓存。预留 2.5–3 小时。
   **不要重复点 Run workflow**：`concurrency` 会取消正在跑的旧任务，白白烧掉 runner 时间。
 - **内核补丁栈有早期预检**：`Verify kernel patch stack (early gate)` 在下载源码后
-  对 `795-10/11/12` 做 dry-run。外层 7 个补丁 `git apply` 成功，并不代表内嵌内核补丁
+  对 `795-10/11/12` 做 dry-run。外层补丁 `git apply` 成功，并不代表内嵌内核补丁
   能打到解压后的 linux 源码树 —— run `42396108778` 就是跑了 2h10m 才在
   `include/net/dsa.h` 上挂掉（新基线多了 `YT921X` 协议号，旧 hunk 上下文失配）。
-  本地编译的同一检查在 `scripts/check-kernel-patches.py`。
+  预检从 `target/linux/generic/kernel-6.18` 读内核版本，优先用 `dl/` 里真正的
+  `linux-X.Y.Z.tar.*`，`make download` 还没下载内核包时会自动从 `gregkh/linux`
+  对应 stable tag 取 `include/net/dsa.h`；只有 `dsa.h` 的失配会判致命，其余文件
+  仅作提示。本地编译的同一检查在 `scripts/check-kernel-patches.py`。
+  run `42433695951` 曾因旧版脚本把 `linux-firmware-*.tar.xz` 误当内核源码包而
+  在 8 分钟处误杀构建，现已改为精确匹配 + 取不到源码时告警放行（不阻断构建）。
 
 ---
 
