@@ -453,8 +453,10 @@ sudo apt install -y --no-install-recommends \
   `include/net/dsa.h` 上挂掉（新基线多了 `YT921X` 协议号，旧 hunk 上下文失配）。
   预检从 `target/linux/generic/kernel-6.18` 读内核版本，优先用 `dl/` 里真正的
   `linux-X.Y.Z.tar.*`，`make download` 还没下载内核包时会自动从 `gregkh/linux`
-  对应 stable tag 取 `include/net/dsa.h`；只有 `dsa.h` 的失配会判致命，其余文件
-  仅作提示。本地编译的同一检查在 `scripts/check-kernel-patches.py`。
+  对应 stable tag 取 `include/net/dsa.h`；上游补丁栈只回放到 `795-11` 为止
+  —— `967-*`（YT922x）按文件名排在 `795-*` 之后，是 `make` 在 795-11 之后才打的，
+  提前回放会造出含 `YT922X 33/34` 的「最终态」`dsa.h` 而误判（run `42435518902`）。
+  只有 `dsa.h` 的失配会判致命，其余文件仅作提示。本地编译的同一检查在 `scripts/check-kernel-patches.py`。
   run `42433695951` 曾因旧版脚本把 `linux-firmware-*.tar.xz` 误当内核源码包而
   在 8 分钟处误杀构建，现已改为精确匹配 + 取不到源码时告警放行（不阻断构建）。
 

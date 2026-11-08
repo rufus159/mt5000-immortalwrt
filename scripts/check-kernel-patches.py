@@ -19,7 +19,8 @@ our three patches against it, so the same failure surfaces in seconds:
      downloads the kernel tarball later, during target/linux/prepare --
      fetch include/net/dsa.h from the matching upstream stable tag
   2. replay the upstream generic patch stack (backport-6.18 then
-     pending-6.18, in filename order) for the files we have
+     pending-6.18, in filename order) UP TO 795-11 ONLY -- patches named
+     967-* sort after our 795-* files and are applied by make *after* 795-11
   3. `patch --dry-run` each of 795-10/11/12
 
 The upstream stack matters: on baseline 4765b65762 (kernel 6.18.60) upstream
@@ -36,6 +37,11 @@ If neither the tarball nor the upstream file can be obtained, the gate prints
 a warning and exits 0 rather than killing the build (CI run 42433695951 was
 aborted after 8 minutes because an earlier version of this script mistook
 `linux-firmware-20261019.tar.xz` for the kernel tarball).
+
+CI run 42435518902: an earlier version replayed the WHOLE stack, including
+967-27 / 967-40 (YT922x) which sort after 795-* and are applied by make only
+after 795-11. That produced a final-state dsa.h with YT922X 33/34 and made an
+already-correct 795-11 look broken. The replay is therefore cut at 795-11.
 """
 
 import argparse
@@ -228,22 +234,37 @@ def main():
             print("  NOTE: no pristine copy for %d file(s): %s"
                   % (len(missing), ", ".join(missing)))
 
-        # 3. Replay the upstream generic patch stack for the files we have.
-        applied, replay_warnings = 0, []
+        # 3. Replay the upstream stack, but ONLY the patches patch-kernel.sh
+        #    applies BEFORE 795-11. Within each directory patches are sorted by
+        #    filename, so 967-* (YT922x) come AFTER our 795-* files. Replaying
+        #    the whole stack builds a final-state dsa.h with YT922X 33/34 that
+        #    795-11 never sees -- CI run 42435518902 failed here for exactly
+        #    this reason while 795-11 itself was already correct.
+        ordered = []
         for sub in ("backport-6.18", "pending-6.18"):
             d = os.path.join(tree, "target/linux/generic", sub)
-            for f in sorted(glob.glob(os.path.join(d, "*.patch"))):
-                if OUR_PATCHES.match(os.path.basename(f)):
+            ordered += sorted(glob.glob(os.path.join(d, "*.patch")),
+                              key=os.path.basename)
+        cut = next((i for i, f in enumerate(ordered)
+                    if os.path.basename(f).startswith("795-11")), None)
+        if cut is None:
+            warn("795-11 missing from patch order; replaying the whole stack")
+        else:
+            ordered = ordered[:cut]
+        print("upstream patches replayed up to 795-11: %d" % len(ordered))
+        applied, replay_warnings = 0, []
+        for f in ordered:
+            if OUR_PATCHES.match(os.path.basename(f)):
+                continue
+            for path, seg, _a in segments(open(f, encoding="utf-8", errors="replace").read()):
+                if path not in have:
                     continue
-                for path, seg, _a in segments(open(f, encoding="utf-8", errors="replace").read()):
-                    if path not in have:
-                        continue
-                    r = run_patch(tmp, seg)
-                    if r.returncode != 0:
-                        replay_warnings.append("upstream %s -> %s replay skipped"
-                                               % (os.path.basename(f), path))
-                    else:
-                        applied += 1
+                r = run_patch(tmp, seg)
+                if r.returncode != 0:
+                    replay_warnings.append("upstream %s -> %s replay skipped"
+                                           % (os.path.basename(f), path))
+                else:
+                    applied += 1
         print("upstream segments replayed: %d" % applied)
 
         # 4. Dry-run our own patches (this is what `make world` would do 2h later).
