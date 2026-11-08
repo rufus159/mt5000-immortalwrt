@@ -1,0 +1,78 @@
+From 37836932efacf22b7157debb93f524da3b3831b7 Mon Sep 17 00:00:00 2001
+From: rufus159 <rufus159@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 18:29:26 +0800
+Subject: [PATCH 6/6] mediatek: filogic: rtl8366ub: implement port_max_mtu for
+ jumbo frames
+
+Measured on the device: the conduit (eth0) accepts MTU up to 2030
+(MTK_MAX_RX_LENGTH_2K 2048 minus MTK_RX_ETH_HLEN 18), but the DSA user
+ports lan1/lan2 refuse anything above 1500:
+
+  eth0  2000 -> OK        eth0 2032 -> EINVAL
+  lan1  1502 -> EINVAL
+
+dsa_user.c only sets a user port's max_mtu when the switch driver
+provides the port_max_mtu callback:
+
+  if (ds->ops->port_max_mtu)
+      user_dev->max_mtu = ds->ops->port_max_mtu(ds, port->index);
+
+rtl8366ub does not implement it, so max_mtu keeps the ETH_DATA_LEN
+default and dsa_user_change_mtu() rejects anything larger before the
+request reaches the hardware at all.
+
+Add the callback returning 9000. DSA still clamps the effective value
+with min(conduit->max_mtu, dev->max_mtu + tag_overhead), so on this
+board the ceiling stays at the conduit's 2030. Going beyond that would
+mean raising MTK_MAX_RX_LENGTH_2K in mtk_eth_soc, which is a separate
+change and needs its own validation.
+
+This only lifts the cap; the switch port MACs still default to
+standard-size frames, and end-to-end jumbo requires every hop to agree,
+so it is opt-in per interface.
+
+Signed-off-by: rufus159 <rufus159@users.noreply.github.com>
+---
+ .../795-10-net-dsa-realtek-add-rtl8366ub.patch       | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch b/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch
+index 0a47beb264..03f910231d 100644
+--- a/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch
++++ b/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch
+@@ -446,7 +446,7 @@ Signed-off-by: Hongjian Zhang <hongjian.zhang@gl-inet.com>
+ +}
+ --- /dev/null
+ +++ b/drivers/net/dsa/realtek/rtl8366ub_dsa.c
+-@@ -0,0 +1,1002 @@
++@@ -0,0 +1,1012 @@
+ +// SPDX-License-Identifier: GPL-2.0
+ +/*
+ + * This is a sparsely documented chip, the only viable documentation seems
+@@ -1283,6 +1283,15 @@ Signed-off-by: Hongjian Zhang <hongjian.zhang@gl-inet.com>
+ +				   MAC_10000FD;
+ +}
+ +
+++static int rtl8366ub_sw_port_max_mtu(struct dsa_switch *ds, int port)
+++{
+++	/* The switch passes any frame the MAC accepts; the real ceiling is the
+++	 * conduit's MTU, which DSA clamps on its side. Advertise 9000 so
+++	 * lan1/lan2 can be raised, and let the core keep it sane.
+++	 */
+++	return 9000;
+++}
+++
+ +static void rtl8366ub_sw_phylink_mac_config(struct phylink_config *config, unsigned int mode,
+ +					    const struct phylink_link_state *state)
+ +{
+@@ -1349,6 +1358,7 @@ Signed-off-by: Hongjian Zhang <hongjian.zhang@gl-inet.com>
+ +	.tag_8021q_vlan_add = rtl8366ub_tag_8021q_vlan_add,
+ +	.tag_8021q_vlan_del = rtl8366ub_tag_8021q_vlan_del,
+ +	.phylink_get_caps = rtl8366ub_sw_phylink_get_caps,
+++	.port_max_mtu = rtl8366ub_sw_port_max_mtu,
+ +};
+ +
+ +static int rtl8366ub_mdio_probe(struct mdio_device *mdiodev)
+-- 
+2.43.0
+

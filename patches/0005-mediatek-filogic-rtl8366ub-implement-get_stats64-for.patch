@@ -1,0 +1,112 @@
+From c76734bab13a0a5fb2df54db53889953ea7778da Mon Sep 17 00:00:00 2001
+From: rufus159 <rufus159@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 18:29:26 +0800
+Subject: [PATCH 5/6] mediatek: filogic: rtl8366ub: implement get_stats64 for
+ per-port counters
+
+The RTL8366UB DSA driver provides get_ethtool_stats() but leaves the
+get_stats64 callback unset, so every userspace counter read
+(/sys/class/net/lanN/statistics/*, ifconfig, LuCI status page) falls
+back to the DSA core default and reports the conduit interface's
+aggregate for all user ports.
+
+On GL-MT5000 this shows as lan1 carrying the whole bridge's traffic
+while lan2 reports a few kilobytes, even though `ethtool -S lan2` (the
+path that does reach rtl8366ub_mib_get_stats()) shows multi-gigabyte
+counters. Physical forwarding is correct; only the accounting is wrong.
+
+Add rtl8366ub_sw_get_stats64(), which reads the MIB array and maps the
+slots onto rtnl_link_stats64, and wire it into dsa_switch_ops. The
+RTL_MIB_* indices mirror rtl8366ub_mibs[] in rtl8366ub_mib.c in both
+order and length (17 entries).
+
+Measured on GL-MT5000 (ImmortalWrt master, kernel 6.18.52), PC on lan1
+<-> PVE on lan2 streaming simultaneously:
+  driver layer before: lan1 rx 6.88 GB / lan2 rx 2.1 KB  (aggregate)
+  ASIC layer (truth) : lan1 +4140 MB  / lan2 +2584 MB
+
+Signed-off-by: rufus159 <rufus159@users.noreply.github.com>
+---
+ ...795-10-net-dsa-realtek-add-rtl8366ub.patch | 52 ++++++++++++++++++-
+ 1 file changed, 51 insertions(+), 1 deletion(-)
+
+diff --git a/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch b/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch
+index 792d1dd6c0..0a47beb264 100644
+--- a/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch
++++ b/target/linux/generic/pending-6.18/795-10-net-dsa-realtek-add-rtl8366ub.patch
+@@ -446,7 +446,7 @@ Signed-off-by: Hongjian Zhang <hongjian.zhang@gl-inet.com>
+ +}
+ --- /dev/null
+ +++ b/drivers/net/dsa/realtek/rtl8366ub_dsa.c
+-@@ -0,0 +1,952 @@
++@@ -0,0 +1,1002 @@
+ +// SPDX-License-Identifier: GPL-2.0
+ +/*
+ + * This is a sparsely documented chip, the only viable documentation seems
+@@ -795,6 +795,55 @@ Signed-off-by: Hongjian Zhang <hongjian.zhang@gl-inet.com>
+ +	rtl8366ub_mib_get_stats(priv, port, data);
+ +}
+ +
+++/* MIB slot indices, keep in sync with rtl8366ub_mibs[] in rtl8366ub_mib.c. */
+++enum {
+++	RTL_MIB_IFINOCTETS,
+++	RTL_MIB_IFOUTOCTETS,
+++	RTL_MIB_IFINUCASTPKTS,
+++	RTL_MIB_IFINMULTICASTPKTS,
+++	RTL_MIB_IFINBROADCASTPKTS,
+++	RTL_MIB_IFOUTUCASTPKTS,
+++	RTL_MIB_IFOUTMULTICASTPKTS,
+++	RTL_MIB_IFOUTBROADCASTPKTS,
+++	RTL_MIB_DOT3STATSFCSERRORS,
+++	RTL_MIB_DOT3STATSSYMBOLERRORS,
+++	RTL_MIB_DOT3INPAUSEFRAMES,
+++	RTL_MIB_DOT3OUTPAUSEFRAMES,
+++	RTL_MIB_ETHERSTATSFRAGMENTS,
+++	RTL_MIB_ETHERSTATSJABBERS,
+++	RTL_MIB_ETHERSTATSDROPEVENTS,
+++	RTL_MIB_DOT1DTPPORTINDISCARDS,
+++	RTL_MIB_IFOUTDISCARDS,
+++	RTL_MIB_MAX,
+++};
+++
+++static void rtl8366ub_sw_get_stats64(struct dsa_switch *ds, int port,
+++				     struct rtnl_link_stats64 *s)
+++{
+++	struct rtl8366ub_priv *priv = ds->priv;
+++	u64 data[RTL_MIB_MAX];
+++
+++	if (!dsa_is_user_port(ds, port))
+++		return;
+++
+++	memset(data, 0, sizeof(data));
+++	rtl8366ub_mib_get_stats(priv, port, data);
+++
+++	s->rx_bytes   = data[RTL_MIB_IFINOCTETS];
+++	s->tx_bytes   = data[RTL_MIB_IFOUTOCTETS];
+++	s->rx_packets = data[RTL_MIB_IFINUCASTPKTS] +
+++		    data[RTL_MIB_IFINMULTICASTPKTS] +
+++		    data[RTL_MIB_IFINBROADCASTPKTS];
+++	s->tx_packets = data[RTL_MIB_IFOUTUCASTPKTS] +
+++		    data[RTL_MIB_IFOUTMULTICASTPKTS] +
+++		    data[RTL_MIB_IFOUTBROADCASTPKTS];
+++	s->rx_errors  = data[RTL_MIB_DOT3STATSFCSERRORS] +
+++		    data[RTL_MIB_DOT3STATSSYMBOLERRORS];
+++	s->rx_dropped = data[RTL_MIB_ETHERSTATSDROPEVENTS] +
+++		    data[RTL_MIB_DOT1DTPPORTINDISCARDS];
+++	s->tx_dropped = data[RTL_MIB_IFOUTDISCARDS];
+++}
+++
+ +static int rtl8366ub_get_sset_count(struct dsa_switch *ds, int port, int sset)
+ +{
+ +	if (sset != ETH_SS_STATS)
+@@ -1281,6 +1330,7 @@ Signed-off-by: Hongjian Zhang <hongjian.zhang@gl-inet.com>
+ +	.phy_read = rtl8366ub_sw_phy_read,
+ +	.phy_write = rtl8366ub_sw_phy_write,
+ +	.get_ethtool_stats = rtl8366ub_sw_get_ethtool_stats,
+++	.get_stats64 = rtl8366ub_sw_get_stats64,
+ +	.get_sset_count = rtl8366ub_get_sset_count,
+ +	.port_enable = rtl8366ub_sw_port_enable,
+ +	.port_disable = rtl8366ub_sw_port_disable,
+-- 
+2.43.0
+
