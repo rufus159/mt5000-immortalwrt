@@ -937,11 +937,11 @@ do_build() {
     cd "$SRC_DIR"
 
     # 内核补丁栈预检（对应 CI 的 Verify kernel patch stack 步骤）。
-    # 外层 7 个补丁能 git apply 不代表内嵌的 795-10/11/12 能打到内核源码，
+    # 外层补丁能 git apply 不代表内嵌的 795-10/795-11 能打到内核源码，
     # 先用 dl/ 里的内核 tarball 做 dry-run，别等编译 2 小时才报错。
     if command -v python3 >/dev/null 2>&1; then
         python3 "$REPO_ROOT/scripts/check-kernel-patches.py" --tree "$SRC_DIR" \
-            || die "内核补丁栈预检失败：795-11 的 include/net/dsa.h 上下文与当前基线不匹配"
+            || die "内核补丁栈预检失败：795-10/795-11 的内核补丁上下文与当前基线不匹配"
     else
         warn "未找到 python3，跳过内核补丁栈预检"
     fi
