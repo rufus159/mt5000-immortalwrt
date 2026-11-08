@@ -408,8 +408,10 @@ jobs:
           # patches/ 按「建文件 -> 改文件」严格分层，必须按编号顺序套：
           #   0001 设备支持本体（openwrt PR #24237 head + 该 PR 的审阅反馈修复，
           #        自 dmsza/openwrt 移植）+ RTL8366UB 驱动(795-10) + 802.1Q
-          #        tagger 与 PPE 出口(795-11) + dummy NAPI 顺序修复(795-12)
-          #   0002 795-11/795-12 的 VLAN offload 与 NAPI 清理修复 (dmsza 8fbeeb6)
+          #        tagger 与 PPE 出口(795-11)
+          #   0002 795-11 的 VLAN offload 修复 (dmsza 8fbeeb6)
+          #   注：795-12(dummy NAPI 顺序)已移除 —— 6.18.60 上游内核自带同等修复，
+          #       旧补丁会重复初始化 dummy_dev，且 Hunk #2 必然失配。
           #   0003 交换机初始化强化 + BPDU/IGMP/MLD 陷阱到 CPU (PR head 89a10ec)
           #   0004 tagger 同步(控制帧解码 + mac_header 修复) + factory nvmem 单元
           #        (PR head 1713e8be63)

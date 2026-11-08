@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Early gate for the self-built kernel patches (795-10 / 795-11 / 795-12).
+"""Early gate for the self-built kernel patches (795-10 / 795-11).
+
+795-12 (dummy NAPI ordering) was removed: upstream 6.18.60 already allocates
+dummy_dev before registering netdevs and fixes the same race in-kernel, so the
+vendored patch would duplicate the initialization and its second hunk cannot
+apply at all (CI run 42439287338).
 
 Why this exists
 ---------------
@@ -12,7 +17,7 @@ toolchain/kernel-headers stage -- in CI run 42396108778 it took 2h10m to get
 there before 795-11 died on include/net/dsa.h.
 
 This script reproduces the kernel patch stack cheaply and does a dry-run of
-our three patches against it, so the same failure surfaces in seconds:
+our patches against it, so the same failure surfaces in seconds:
 
   1. take the pristine files touched by our patches from a kernel tarball in
      dl/ (if `make download` already fetched one), or -- since OpenWrt only
@@ -21,7 +26,7 @@ our three patches against it, so the same failure surfaces in seconds:
   2. replay the upstream generic patch stack (backport-6.18 then
      pending-6.18, in filename order) UP TO 795-11 ONLY -- patches named
      967-* sort after our 795-* files and are applied by make *after* 795-11
-  3. `patch --dry-run` each of 795-10/11/12
+  3. `patch --dry-run` each of 795-10 / 795-11
 
 The upstream stack matters: on baseline 4765b65762 (kernel 6.18.60) upstream
 adds YT921X (32) to the DSA tag protocol enum, which is exactly what made the
@@ -57,7 +62,7 @@ import tarfile
 import tempfile
 import urllib.request
 
-OUR_PATCHES = re.compile(r"^795-1[0-2]-.*\.patch$")
+OUR_PATCHES = re.compile(r"^795-1[01]-.*\.patch$")
 KERNEL_TARBALL = re.compile(
     r"^linux-(\d+\.\d+(?:\.\d+)?)\.tar\.(?:xz|gz|zst|bz2|lzma)$")
 DSA_PATH = "include/net/dsa.h"
@@ -163,8 +168,8 @@ def main():
     pending = os.path.join(tree, "target/linux/generic/pending-6.18")
     ours = sorted(f for f in glob.glob(os.path.join(pending, "*.patch"))
                   if OUR_PATCHES.match(os.path.basename(f)))
-    if len(ours) != 3:
-        die("expected exactly 3 self-built patches (795-10/11/12) in %s, found %d: %s"
+    if len(ours) != 2:
+        die("expected exactly 2 self-built patches (795-10/795-11) in %s, found %d: %s"
             % (pending, len(ours), [os.path.basename(f) for f in ours]))
     print("self-built kernel patches: %s"
           % ", ".join(os.path.basename(f) for f in ours))

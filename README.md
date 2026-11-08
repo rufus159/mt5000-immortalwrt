@@ -463,9 +463,11 @@ sudo apt install -y --no-install-recommends \
   对应 stable tag 取 `include/net/dsa.h`；上游补丁栈只回放到 `795-11` 为止
   —— `967-*`（YT922x）按文件名排在 `795-*` 之后，是 `make` 在 795-11 之后才打的，
   提前回放会造出含 `YT922X 33/34` 的「最终态」`dsa.h` 而误判（run `42435518902`）。
-  只有 `dsa.h` 的失配会判致命，其余文件仅作提示 —— run `42439287338` 就是
-  `795-12` 在 `mtk_eth_soc.c` 的 Hunk #2 失配，门禁没覆盖该文件，跑了 1h18m
-  才在 kernel-headers 阶段暴露。本地编译的同一检查在 `scripts/check-kernel-patches.py`。
+  只有 `dsa.h` 的失配会判致命，其余文件仅作提示。本地编译的同一检查在 `scripts/check-kernel-patches.py`。
+  run `42439287338` 里 `795-12` 在 `mtk_eth_soc.c` 的 Hunk #2 失配（跑了 1h18m 才暴露）：
+  查明 **6.18.60 上游内核已把 `dummy_dev` 初始化提前到 `register_netdev` 之前**并修复同一
+  race，795-12 想加的代码已存在、想删的代码已不存在，因此该补丁整体移除（含 `0002`
+  对它的修改），而不是调 hunk 行号。
   run `42433695951` 曾因旧版脚本把 `linux-firmware-*.tar.xz` 误当内核源码包而
   在 8 分钟处误杀构建，现已改为精确匹配 + 取不到源码时告警放行（不阻断构建）。
 
