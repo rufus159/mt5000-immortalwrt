@@ -357,6 +357,11 @@ check_prereq() {
              libelf-dev libltdl-dev libmpc-dev libmpfr-dev libgmp-dev \
              squashfs-tools mkisofs xxd; do
         if command -v dpkg >/dev/null 2>&1 && ! dpkg -s "$p" >/dev/null 2>&1; then
+            # Ubuntu 24.04 上这两个是命令别名：pkgconf 提供 pkg-config、
+            # genisoimage 提供 mkisofs，dpkg -s 按包名查会误报缺失。
+            case "$p" in
+                pkg-config|mkisofs) command -v "$p" >/dev/null 2>&1 && continue ;;
+            esac
             hint="$hint $p"
         fi
     done
