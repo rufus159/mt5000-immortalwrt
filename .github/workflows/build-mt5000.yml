@@ -190,7 +190,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # 保留当前基线的 dl-/stage- 缓存，删掉其它基线的，避免 10G 配额
+          # 保留当前基线的 dl-/stage-/ccache- 缓存，删掉其它基线的，避免 10G 配额
           # 被上一版工具链占满后把 dl/ 挤出去（LRU 淘汰）。
           #
           # 防御：IWRT_REF 现在由 job 级 env 表达式解析，理论上这里非空；
@@ -200,7 +200,7 @@ jobs:
             echo "IWRT_REF 为空，跳过 prune（不删任何缓存）"
             exit 0
           fi
-          echo "keeping: dl-${IWRT_REF}-* and stage-${IWRT_REF}-*"
+          echo "keeping: dl-/stage-/ccache- ${IWRT_REF}-*"
           gh api "repos/${GITHUB_REPOSITORY}/actions/caches?per_page=100" \
             --jq '.actions_caches[] | "\(.id) \(.key)"' > /tmp/caches.txt 2>/dev/null || : > /tmp/caches.txt
 
@@ -208,7 +208,7 @@ jobs:
           while read -r id key; do
             [ -z "$id" ] && continue
             case "$key" in
-              "dl-${IWRT_REF}-"*|"stage-${IWRT_REF}-"*) continue ;;
+              "dl-${IWRT_REF}-"*|"stage-${IWRT_REF}-"*|"ccache-${IWRT_REF}-"*) continue ;;
             esac
             echo "deleting stale: $key"
             gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/caches/$id" >/dev/null 2>&1 && n=$((n+1)) || true
@@ -358,8 +358,12 @@ jobs:
       # 原 key 里带 hashFiles('patches/*.patch')，导致改任何补丁都会让
       # 2.4~2.6G 的下载缓存整体失效重新拉一遍。这里只按源码基线区分，
       # 再用 restore-keys 做前缀回退，基线变了也能复用绝大部分包。
-      - name: Cache downloaded sources (dl/)
-        uses: actions/cache@v4
+      # actions/cache@v4 的保存发生在 post 步骤，job 失败时 post 会被整批跳过
+      # （run 42439287338 跑了 1h18m，Post Cache 全 pending、仓库缓存数为 0）。
+      # dl/ 是纯输入，失败时保存完全安全，所以改成 restore + 末尾 save(always())。
+      - name: Restore downloaded sources (dl/)
+        id: cache-dl
+        uses: actions/cache/restore@v4
         with:
           path: immortalwrt/dl
           key: dl-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed') }}
@@ -369,25 +373,34 @@ jobs:
 
       # staging_dir 是编译工具链（gcc/binutils bootstrap + host 工具 +
       # target 库），单次重编 35~55 分钟，是整条流水线里最贵的一段。
-      # ccache 再缓存 C/C++ 目标文件。两者一起能把增量构建压到几十分钟。
+      # 只在 job 成功时由 actions/cache@v4 的 post 保存：它带 stamp 文件，
+      # 而后面的 Refresh toolchain stamps 会把恢复回来的 stamp 全部 touch
+      # 成最新；一旦保存半成品，下次会把没编完的步骤误判为已完成。
       #
       # 与 dl/ 不同，stage key 必须绑定补丁集：staging_dir 里有
-      # toolchain/kernel-headers 装出来的内核头 + ccache 目标文件，补丁
-      # （尤其 795-11 改 include/net/dsa.h）变了还复用旧 stage 缓存，
-      # 会把旧内核头/旧目标文件带进新固件。宁可让改补丁后的首次构建冷编一次。
-      # 注意：内核源码树本体在 build_dir/（未缓存），每次都会重新解压打补丁，
-      # 所以这里防的是安装产物与 ccache，不是内核源码树本身。
+      # toolchain/kernel-headers 装出来的内核头，补丁（尤其 795-11 改
+      # include/net/dsa.h）变了还复用旧 stage 缓存，会把旧内核头带进新固件。
+      # 注意：内核源码树本体在 build_dir/（未缓存），每次都会重新解压打补丁。
       # restore-keys 只放宽 rootfs_size，去掉原来跨基线/跨配置的
       # stage-<ref>- / stage- 两条过宽前缀（会误命中完全不同的缓存）。
-      - name: Cache toolchain + ccache (staging_dir)
+      - name: Cache toolchain (staging_dir)
         uses: actions/cache@v4
         with:
-          path: |
-            immortalwrt/staging_dir
-            immortalwrt/.ccache
+          path: immortalwrt/staging_dir
           key: stage-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed', 'patches/*.patch') }}-${{ env.ROOTFS_SIZE }}
           restore-keys: |
             stage-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed', 'patches/*.patch') }}-
+
+      # ccache 拆成独立缓存：编译器对象缓存按源文件/编译参数哈希自校验，
+      # 保存半成品不会污染构建，所以失败时也值得存下来复用。
+      - name: Restore ccache
+        id: cache-ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: immortalwrt/.ccache
+          key: ccache-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed', 'patches/*.patch') }}-${{ env.ROOTFS_SIZE }}
+          restore-keys: |
+            ccache-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed', 'patches/*.patch') }}-
 
       - name: Apply MT5000 device patch
         run: |
@@ -896,3 +909,23 @@ jobs:
             immortalwrt/bin/targets/mediatek/filogic/*glinet_gl-mt5000*
             immortalwrt/bin/targets/mediatek/filogic/sha256sums
             immortalwrt/bin/targets/mediatek/filogic/config.buildinfo
+
+      # actions/cache/restore 不产生 post 步骤，必须在这里显式保存。
+      # always() 让失败/取消时也能留下已下载的源码与已编译的对象，
+      # 下一轮不必从零开始（run 42439287338 的 1h18m 就是这么白丢的）。
+      # 命中缓存时不重复保存；路径尚未生成时 continue-on-error 兜底。
+      - name: Save downloaded sources (dl/) on any outcome
+        if: always() && steps.cache-dl.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: immortalwrt/dl
+          key: dl-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed') }}
+
+      - name: Save ccache on any outcome
+        if: always() && steps.cache-ccache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: immortalwrt/.ccache
+          key: ccache-${{ env.IWRT_REF }}-${{ hashFiles('config/mt5000.seed', 'patches/*.patch') }}-${{ env.ROOTFS_SIZE }}

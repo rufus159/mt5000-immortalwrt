@@ -443,10 +443,17 @@ sudo apt install -y --no-install-recommends \
 - **`make defconfig` 会打印 3 条 `recursive dependency detected!`**（`qt5base-gui`、
   `fwknopd`、`squeezelite-custom`）。它们来自官方 feeds 的 Kconfig，与本仓库 seed
   无关，`Generate .config` 步骤仍然 success，属非致命噪声，不需要处理。
-- **换基线或改补丁后的首次构建是冷启动**：`dl`/`stage` 缓存 key 都含基线 SHA，
-  `stage` 还绑定 `patches/*.patch` 哈希（防旧内核头 / ccache 目标文件被复用），
+- **换基线或改补丁后的首次构建是冷启动**：`dl` / `stage` / `ccache` 缓存 key 都含基线 SHA，
+  `stage` 与 `ccache` 还绑定 `patches/*.patch` 哈希（防旧内核头 / 目标文件被复用），
   且 `Prune stale caches` 会清掉旧基线缓存。预留 2.5–3 小时。
   **不要重复点 Run workflow**：`concurrency` 会取消正在跑的旧任务，白白烧掉 runner 时间。
+- **构建失败时也能留下中间产物**（run `42439287338` 的教训）：`actions/cache@v4` 的
+  保存发生在 post 步骤，job 失败时 post 被整批跳过，1h18m 编译出的工具链 / 源码 /
+  ccache 对象全部随临时 runner 销毁（仓库缓存数为 0）。现在 `dl/` 与 `.ccache` 改用
+  `actions/cache/restore` + 末尾 `actions/cache/save`（`if: always()`），失败或取消时
+  也会保存；`staging_dir` 仍只在成功时保存 —— 它带 stamp 文件，而
+  `Refresh toolchain stamps` 会把恢复回来的 stamp 全部 touch 成最新，半成品缓存
+  会让下一次把没编完的步骤误判为已完成。
 - **内核补丁栈有早期预检**：`Verify kernel patch stack (early gate)` 在下载源码后
   对 `795-10/11/12` 做 dry-run。外层补丁 `git apply` 成功，并不代表内嵌内核补丁
   能打到解压后的 linux 源码树 —— run `42396108778` 就是跑了 2h10m 才在
@@ -456,7 +463,9 @@ sudo apt install -y --no-install-recommends \
   对应 stable tag 取 `include/net/dsa.h`；上游补丁栈只回放到 `795-11` 为止
   —— `967-*`（YT922x）按文件名排在 `795-*` 之后，是 `make` 在 795-11 之后才打的，
   提前回放会造出含 `YT922X 33/34` 的「最终态」`dsa.h` 而误判（run `42435518902`）。
-  只有 `dsa.h` 的失配会判致命，其余文件仅作提示。本地编译的同一检查在 `scripts/check-kernel-patches.py`。
+  只有 `dsa.h` 的失配会判致命，其余文件仅作提示 —— run `42439287338` 就是
+  `795-12` 在 `mtk_eth_soc.c` 的 Hunk #2 失配，门禁没覆盖该文件，跑了 1h18m
+  才在 kernel-headers 阶段暴露。本地编译的同一检查在 `scripts/check-kernel-patches.py`。
   run `42433695951` 曾因旧版脚本把 `linux-firmware-*.tar.xz` 误当内核源码包而
   在 8 分钟处误杀构建，现已改为精确匹配 + 取不到源码时告警放行（不阻断构建）。
 
