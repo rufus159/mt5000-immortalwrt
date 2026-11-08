@@ -1,3 +1,4 @@
+# Touch: force workflow re-index after migration to foxsfire/gl-mt5000
 name: Build ImmortalWrt for GL.iNet MT5000
 
 on:
