@@ -1,0 +1,134 @@
+From 6f1c4a05f85bbe56bf4724e02021711ff6951cc0 Mon Sep 17 00:00:00 2001
+From: rufus159 <rufus159@users.noreply.github.com>
+Date: Sun, 8 Nov 2026 20:45:35 +0800
+Subject: [PATCH] net: dsa: rtl8366ub: debounce PHY link state changes
+
+rtl8366ub_phy_read_status() derives phydev->link from a single indirect
+OCP read of RTL8366UB_PHY_RESOLVED_REG. That read occasionally returns a
+value inconsistent with the neighbouring samples, and acting on it flips
+the carrier, which makes the DSA user port drop the frames that are
+queued at that moment.
+
+On GL-MT5000 (RTL8366UB behind MT7987) this is visible without any
+traffic at all: 67 link down events in the first hour after boot, each
+recovered after exactly 1.0 s, alternating between lan1 and lan2, with
+rx_dropped bumps of 5-33 frames on the affected port. LuCI polls the
+carrier once per second, so the same events show up in the web UI as the
+port flashing "disconnected".
+
+Re-read the register once when a transition is detected, and if the two
+samples disagree require RTL8366UB_LINK_DEBOUNCE (2) consecutive poll
+cycles to report the new state before accepting it. A real cable unplug is
+therefore still noticed within one poll cycle, while a single bad sample
+no longer takes the port down.
+
+Signed-off-by: rufus159 <rufus159@users.noreply.github.com>
+---
+ ...sa-rtl8366ub-debounce-phy-link-state.patch | 98 +++++++++++++++++++
+ 1 file changed, 98 insertions(+)
+ create mode 100644 target/linux/generic/pending-6.18/795-12-net-dsa-rtl8366ub-debounce-phy-link-state.patch
+
+diff --git a/target/linux/generic/pending-6.18/795-12-net-dsa-rtl8366ub-debounce-phy-link-state.patch b/target/linux/generic/pending-6.18/795-12-net-dsa-rtl8366ub-debounce-phy-link-state.patch
+new file mode 100644
+index 0000000..7ca4c65
+--- /dev/null
++++ b/target/linux/generic/pending-6.18/795-12-net-dsa-rtl8366ub-debounce-phy-link-state.patch
+@@ -0,0 +1,98 @@
++diff --git a/drivers/net/dsa/realtek/rtl8366ub_dsa.h b/drivers/net/dsa/realtek/rtl8366ub_dsa.h
++--- a/drivers/net/dsa/realtek/rtl8366ub_dsa.h
+++++ b/drivers/net/dsa/realtek/rtl8366ub_dsa.h
++@@ -54,6 +54,10 @@ struct rtl8366ub_priv {
++ 	struct mutex mib_mutex;
++ 
++ 	struct rtl8366ub_port ports[RTL8366UB_NUM_PORTS];
+++
+++	/* PHY link debounce state, see rtl8366ub_phy_read_status() */
+++	u8 link_debounce[RTL8366UB_NUM_PORTS];
+++	u8 link_settled;
++ };
++ 
++ const struct rtl8366ub_port_info *rtl8366ub_get_port_info(int port);
++diff --git a/drivers/net/dsa/realtek/rtl8366ub_phy.c b/drivers/net/dsa/realtek/rtl8366ub_phy.c
++--- a/drivers/net/dsa/realtek/rtl8366ub_phy.c
+++++ b/drivers/net/dsa/realtek/rtl8366ub_phy.c
++@@ -1,5 +1,6 @@
++ // SPDX-License-Identifier: GPL-2.0
++ 
+++#include <linux/delay.h>
++ #include <linux/ethtool.h>
++ #include <linux/mii.h>
++ #include <linux/of.h>
++@@ -12,6 +13,9 @@
++ #define RTL8366UB_PHY_2P5G_ADV BIT(7)
++ #define RTL8366UB_PHY_RESOLVED_REG 0xa434
++ 
+++/* Poll cycles a new link state must persist before it is accepted */
+++#define RTL8366UB_LINK_DEBOUNCE 2
+++
++ static struct rtl8366ub_priv *rtl8366ub_phy_priv(struct phy_device *phydev)
++ {
++ 	return dev_get_drvdata(phydev->mdio.bus->parent);
++@@ -121,8 +125,10 @@ static int rtl8366ub_phy_config_aneg(struct phy_device *phydev)
++ static int rtl8366ub_phy_read_status(struct phy_device *phydev)
++ {
++ 	struct rtl8366ub_priv *priv = rtl8366ub_phy_priv(phydev);
+++	int port = phydev->mdio.addr;
++ 	bool tx_pause;
++ 	bool rx_pause;
+++	bool link;
++ 	u16 resolved;
++ 	u16 bmsr;
++ 	u16 lpa;
++@@ -131,11 +137,50 @@ static int rtl8366ub_phy_read_status(struct phy_device *phydev)
++ 	if (!priv)
++ 		return -ENODEV;
++ 
++-	ret = rtl8366ub_ocp_read(priv, phydev->mdio.addr, RTL8366UB_PHY_RESOLVED_REG, &resolved);
+++	ret = rtl8366ub_ocp_read(priv, port, RTL8366UB_PHY_RESOLVED_REG, &resolved);
++ 	if (ret)
++ 		return ret;
++ 
++-	phydev->link = !!(resolved & BIT(2));
+++	link = !!(resolved & BIT(2));
+++
+++	/*
+++	 * The link state is fetched with an indirect OCP read, which
+++	 * occasionally returns a value inconsistent with the surrounding
+++	 * samples. Acting on a single sample flips phydev->link, makes phylib
+++	 * drop the carrier and throws away the frames queued at that moment;
+++	 * on GL-MT5000 this shows up as a spurious link down once per second
+++	 * even while the port is idle. Re-read to confirm a transition.
+++	 */
+++	if (link != phydev->link) {
+++		usleep_range(1000, 2000);
+++
+++		ret = rtl8366ub_ocp_read(priv, port, RTL8366UB_PHY_RESOLVED_REG,
+++					 &resolved);
+++		if (ret)
+++			return ret;
+++
+++		link = !!(resolved & BIT(2));
+++	}
+++
+++	/*
+++	 * If the re-read disagrees as well, require RTL8366UB_LINK_DEBOUNCE
+++	 * consecutive poll cycles to report the new state before accepting it,
+++	 * so a real cable unplug is noticed at most one poll cycle later. The
+++	 * first sample of a port is always accepted, so the link does not lose
+++	 * an extra second after probe.
+++	 */
+++	if (link != phydev->link) {
+++		if (!(priv->link_settled & BIT(port))) {
+++			priv->link_settled |= BIT(port);
+++		} else if (++priv->link_debounce[port] < RTL8366UB_LINK_DEBOUNCE) {
+++			phydev_dbg(phydev, "ignoring unconfirmed link state %d\n",
+++				   link);
+++			return 0;
+++		}
+++	}
+++	priv->link_debounce[port] = 0;
+++
+++	phydev->link = link;
++ 	if (!phydev->link) {
++ 		phydev->speed = SPEED_UNKNOWN;
++ 		phydev->duplex = DUPLEX_UNKNOWN;

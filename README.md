@@ -13,7 +13,7 @@
 | --- | --- |
 | 源码基线 | ImmortalWrt `master` @ `4765b657625ec5bbda74b44400465fe043802b30`，Linux **6.18.60** |
 | 目标设备 | `mediatek/filogic` → `glinet_gl-mt5000` |
-| 补丁系列 | `patches/` 下 **6 个 `format-patch` 提交**，按文件名顺序应用 |
+| 补丁系列 | `patches/` 下 **7 个 `format-patch` 提交**，按文件名顺序应用 |
 | 编译结果 | 2026-11-08 18:26 `BUILD_EXIT=0`；干净内核树全量重编约 9 分钟（已有工具链缓存） |
 | 产物校验 | 4 个文件 sha256 全部 `OK`；固件包清单 **172 个包** |
 | 运行期配置 | 未做 LAN IP / 密码 / 首启脚本定制，沿用官方默认（LAN `192.168.1.1`） |
@@ -32,7 +32,7 @@
 `patches/0001`–`0004` 即该系列，保留了原作者信息。构建配方与补丁分层的
 组织方式参考了 [Kitsune2077/mt5000-immortalwrt](https://github.com/Kitsune2077/mt5000-immortalwrt)。
 
-在此基础上做了两处改进，各自作为独立提交（`0005` / `0006`）：
+在此基础上做了三处改进，各自作为独立提交（`0005` / `0006` / `0007`）：
 
 1. **`get_stats64` — 每端口流量统计**
    驱动原本只提供 `get_ethtool_stats()`，未实现 `get_stats64`，于是
@@ -45,6 +45,12 @@
    DSA 只在驱动提供 `port_max_mtu` 时抬高用户口 `max_mtu`，否则 lan1/lan2
    被 `ETH_DATA_LEN` 限制在 1500（conduit 实际可到 2030）。新增回调返回
    9000，有效值仍由 DSA 以 `min(conduit->max_mtu, ...)` 钳制。
+3. **`0007` — PHY 链路状态去抖**
+   `rtl8366ub_phy_read_status()` 用一次 OCP 间接读就直接决定 `phydev->link`，
+   偶发的坏读数会让 phylib 关掉 carrier、丢弃当时排队的帧。实测开机 60 分钟
+   内 67 次 Link Down，每次精确 1.0 s 恢复，lan1/lan2 交替出现，LuCI 概览
+   页因此反复显示"未连接"。改动为：状态翻转时先复读确认，仍不一致则要求
+   连续 2 个轮询周期都读到新状态才采纳，真实插拔最多晚 1 s 被发现。
 
 另外把这两处改动按上游 `795-10` 的真实行号与 tab 缩进重新对齐，校正了
 vendored patch 内层 hunk 计数（952 → 1002 → 1012），并补齐合规的
@@ -158,7 +164,7 @@ cd mt5000-immortalwrt
 ./scripts/build-local.sh --from patch --jobs 4  # 改完补丁增量重跑
 ```
 
-脚本流程：克隆/复用源码 → 按顺序应用 `patches/` 的 6 个提交 → 补基线
+脚本流程：克隆/复用源码 → 按顺序应用 `patches/` 的 7 个提交 → 补基线
 Kconfig 缺失符号 → `make defconfig` → `make download` → `make`。
 可选环境变量 `MT5000_LOCAL_BPF_HOST_CLANG=1` 让构建机用主机 clang 跳过
 `tools/llvm-bpf` 源码编译（默认关闭，不改变固件内容）。
@@ -171,8 +177,9 @@ Kconfig 缺失符号 → `make defconfig` → `make download` → `make`。
 - **ImmortalWrt 基线适配**：`backport-6.18/967-03` 引入 `NET_DSA_YT921X`，
   但 `target/linux/generic/config-6.18` 缺对应行，内核 `syncconfig` 会以
   `(NEW)` 交互提问导致非交互编译失败。`build-local.sh` 在应用补丁后补
-  `# CONFIG_NET_DSA_YT921X is not set`。这一行**不属于上游 6 提交**，
-  是将来把系列提交到 ImmortalWrt 主线时需要单独处理的基线 fix。
+  `# CONFIG_NET_DSA_YT921X is not set`。这一行**不属于上游四提交**
+  （`0001`–`0004`），是将来把系列提交到 ImmortalWrt 主线时需要单独处理的
+  基线 fix。
 - PR #24237 目前仍是 `open`，OpenWrt 与 ImmortalWrt 主线都尚未合入，
   因此仍需自行打补丁做全源码编译。
 - 旧的「内核补丁 dry-run 门禁」是针对被替换掉的折叠补丁写的，已移除；
