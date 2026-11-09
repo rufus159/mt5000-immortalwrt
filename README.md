@@ -189,6 +189,17 @@ Kconfig 缺失符号 → `make defconfig` → `make download` → `make`。
   因此仍需自行打补丁做全源码编译。
 - 旧的「内核补丁 dry-run 门禁」是针对被替换掉的折叠补丁写的，已移除；
   补丁正确性以完整编译验证为准。
+- **P0 根因认知更正（2026-11-09）**：发布时曾把偶发坏读数归因于
+  「`rtl8366ub_reg_read()` 发 `READ_OP` 后未等待完成就读 DATA」。逐函数复核后确认：
+  底层 `rtl8366ub_reg.c::reg_read()` 确实没有等待，但上层
+  `rtl8366ub_port.c::ocp_read()` **已有** `ocp_wait()` 轮询
+  `INDACC_STATUS_REG(0x1f02)` 的 `BUSY BIT(2)`（最多 100 次无延时忙等），
+  `phy_read_status()` 读 `0xa434` 走的正是这条路径，因此「OCP 读无完成确认」
+  **不是成立的根因**。坏采样来源仍待定位（候选：STATUS 由无等待的 `reg_read`
+  读出造成「假完成」、忙等无延时过早退出、或 `0xa434` 的 link 位是 PHY/SerDes 瞬态）。
+  主线 `rtl8365mb_main.c::rtl8365mb_phy_poll_busy()` 的
+  `regmap_read_poll_timeout(..., 10, 100)` 是更规范的参考范式（寄存器映射不同，不可直接照抄）。
+  第 7 提交的去抖是 workaround；后续优化应先做定位实验，不要直接加 busy poll。
 
 ## 7. 硬件实测
 
@@ -201,7 +212,7 @@ Kconfig 缺失符号 → `make defconfig` → `make download` → `make`。
 | LAN↔LAN 转发 | RTL8366UB 交换芯片**硬件直通**：手机↔内网 iperf3 1.66 Gbps 时 `eth0`（CPU 上行口）计数为 0、四核占用 1.3% |
 | WAN↔LAN 卸载 | MTK PPE 生效：下行 1.1 Gbps 期间 `ppe1_bytes` 以约 126 MB/s 递增、四核占用 1.4–2.7% |
 | 吞吐基线 | 手机（WiFi 桥接经 `lan1`）下行 >1.3 Gbps、上行 1.0–1.28 Gbps；路由器本机↔内网主机单流双向 2.3–2.5 Gbps、零重传 |
-| LAN2「未连接」现象 | 定位为 `rtl8366ub_phy_read_status()` 单次采样判 `link`，第 7 提交去抖后 480 s 内 **0 次**自发 Down（基线预期约 9 次），真实插拔仍在 1–2 s 内上报 |
+| LAN2「未连接」现象 | 定位为 `rtl8366ub_phy_read_status()` 单次采样判 `link`；第 7 提交去抖后 480 s 内 **0 次**自发 Down（基线预期约 9 次），**101 分钟长窗口复核亦为 0 次**，真实插拔仍在 1–2 s 内上报。去抖是 workaround，坏采样根因仍待定位（见第 6 节） |
 | 每端口统计 | `lan1`/`lan2` 计数准确（偏差即以太网帧开销）；`br-lan`、`pppoe-wan` 漏计是硬件交换与 PPE 卸载的正常结果，不是故障 |
 
 补充两点实测记录：PPE 表在 debugfs 的真实路径是 `/sys/kernel/debug/ppe0`、
@@ -213,7 +224,8 @@ Kconfig 缺失符号 → `make defconfig` → `make download` → `make`。
 
 - 用户口 MTU、`tag_8021q` 的 VLAN 增删与 bridge 反复操作
 - 待机与满载温度、`ethtool` 计数，以及与 MTK 原生标签设备的回归对比
-- 长时间（数天）稳定性，以及链路抖动在长窗口下的复核
+- 长时间（数天）稳定性：守夜服务 `linkwatch` 采集中，24–72 h 报告尚未出
+- P0 坏采样的真实来源：需定位实验确认坏值落在 RDATA 还是 STATUS（见第 6 节认知更正）
 
 > 首轮结论仅覆盖上述已验证项；未覆盖项请勿视为通过。
 
